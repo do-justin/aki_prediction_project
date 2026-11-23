@@ -6,9 +6,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 from docx import Document
-from docx.shared import Inches, Pt
+from docx.shared import Inches
 from docx.enum.section import WD_ORIENT
 import textwrap
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '05_CODE'))

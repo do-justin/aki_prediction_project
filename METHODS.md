@@ -90,10 +90,10 @@ operations retain missing AKI stage, any-AKI, and severe-AKI labels.
 
 Baseline creatinine is the source clinical-table `preop_cr` value. The pipeline
 does not independently select that baseline from a laboratory lookback window.
-The 72-hour horizon is an intentional study-specific choice, with its decision
-provenance recorded in the evidence register. It is not complete seven-day KDIGO
-ascertainment. A valid 72-hour measurement does not ensure a measurement within
-48 hours or complete surveillance throughout follow-up; absence of an observed
+The 72-hour horizon is a [study-specific choice](archive/docs/manuscript-reorientation-2026-11-04.md).
+It is not complete seven-day KDIGO ascertainment. A valid 72-hour measurement
+does not ensure a measurement within 48 hours or complete surveillance
+throughout follow-up; absence of an observed
 rise is not proof that no AKI occurred. Measurement frequency and timing must
 be reported as ascertainment limitations.
 
@@ -321,33 +321,19 @@ pilot's separate fallback qualification mask is not part of this pathway.
 
 ### Window-duration rationale and retrospective sensitivity analysis
 
-The windowed branch retains 10-second windows with a nominal five-second stride
-for this manuscript. Related VitalDB ECG and capnography research used identical
-segmentation for signal-quality assessment; this is implementation precedent,
-not validation of our Catch24 estimates or an optimal duration
-([Idrobo-Ávila et al., 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11100950/)).
+The windowed branch retains the original 10-second windows and nominal
+five-second stride. VitalDB ECG and capnography quality assessment used the
+same segmentation. [Idrobo-Ávila et al., 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11100950/)
 
-The main AKI models preceded an exploratory, outcome-blinded duration pilot in
-120 patients from the main-shared AKI outer-fold-0 training partition. It compared
-10/20/40/80/160/320/640 seconds at four grid origins, without fitting models or
-using outcome values. Every duration met the pilot's numerical-availability gate;
-none met its complete grid-origin stability rule, and all 2,000 patient-bootstrap
-draws selected no candidate. Forty seconds was the shortest tested length at
-which all 24 descriptors individually achieved 95% coverage in every channel.
-The improvement concerned an embedding-distance descriptor in respiratory
-channels; it does not establish joint feature completeness or better prediction.
-
-The pilot cutoffs were engineering conventions, not validated clinical standards.
-Its qualification view masked verified implementation-defined finite fallbacks;
-production features and raw pilot values were preserved. Such fallbacks are not
-waveform errors by definition. Grid shifts, covered edges and window counts vary
-with duration; extrema can respond to real brief events, and zero between-patient
-IQR makes the normalized statistic unevaluable rather than proving unreliability.
-The retained duration is therefore a fixed engineering choice, not a pilot-selected
-optimum. No further duration ablation or threshold revision is planned for this
-manuscript. AKI predictive performance across durations remains untested. Exact
-methods, findings and limitations are in the
-[completed pilot record](.agent/workflows/window-duration-pilot.md).
+An outcome-blinded pilot after model development compared
+10/20/40/80/160/320/640 seconds at four grid origins in 120 patients in
+main-shared AKI outer-fold-0 training. All lengths met the availability gate,
+and zero of 2,000 patient-bootstrap draws selected a candidate under the full
+rule. At 40 seconds all descriptors first reached 95% individual coverage in
+every channel, reflecting improved coverage for a respiratory embedding-distance
+descriptor. The pilot evaluated numerical availability and placement sensitivity.
+Comparative prediction across durations remains untested.
+[Pilot rules and limitations](.agent/workflows/window-duration-pilot.md)
 
 ### Wide-table assembly
 
@@ -387,8 +373,8 @@ the following feature-set families:
 Two-channel waveform-only combinations are excluded from the default grid.
 The core comparisons use preoperative clinical variables alone, all four
 waveforms alone, and their combination, in that fixed presentation order.
-Whole-case comparisons are the main presentation; windowed and additional
-feature-set comparisons are supplementary.
+Whole-operation contrasts are primary. Windowed, channel and sensitivity-cohort
+analyses are exploratory.
 
 ## Model development
 
@@ -514,11 +500,16 @@ of reported performance.
 
 ### Logistic regression
 
-The model uses L2 regularization with `lbfgs`, no class/sample reweighting, and a
-seeded Optuna search over `C` from 1e-4 to 1e4 (20 trials by default). Convergence
-warnings trigger a bounded deterministic retry and unresolved failures are
-reported: the iteration limit increases from 5,000 to 10,000 if needed.
-Calibration and threshold selection follow the shared protocol.
+The frozen manuscript grid used unweighted L2-regularized logistic regression
+with `lbfgs` and 20 seeded Optuna trials over `C` from 1e-4 to 1e4. The
+display-scoped LR revision used 50 trials and shared the frozen inputs, splits,
+search space and AP objective. Each base fit used `class_weight="balanced"`
+during tuning, cross-fitting and outer-training refitting. The weight for each
+class was the training partition size divided by twice its class count.
+Recalibration remained unweighted. Threshold selection used calibrated training
+OOF predictions. Convergence warnings trigger a deterministic retry from 5,000 to 10,000
+iterations, with unresolved failures recorded. Manifests record trial counts
+and weighting.
 
 ### XGBoost
 
@@ -613,10 +604,9 @@ intercept/slope and their confidence intervals are not estimated.
 
 ### Bootstrap uncertainty
 
-Uncertainty is estimated with patient-clustered, non-parametric bootstrap
-resampling of the saved predictions. When possible, delta confidence intervals
-are computed against a reference feature set (`preop_only` by default) using
-paired resamples.
+Confidence intervals use patient-clustered, non-parametric bootstrap resampling
+of the saved predictions. Model comparisons in the publication use paired
+resampling. The default reference feature set is `preop_only`.
 Intervals are the 2.5th and 97.5th percentiles; the current defaults are 5,000
 replicates, seed 0, and unstratified patient-cluster sampling. Requested and
 metric-specific valid replicate counts are recorded. Single-class resamples

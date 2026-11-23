@@ -3,11 +3,10 @@
 Saved artifact layout and reporting commands. Scientific definitions are in
 [METHODS.md](METHODS.md); execution and study paths are in [README.md](README.md).
 
-Completed studies contain 180 main-cohort, 90 broader-ICU and 18 exploratory
-mortality configurations. The 36 main-core configurations were fitted at frozen
-revision `fcff7c7`; supplementary studies reuse verified core references.
-Additional mortality supplements remain unstarted. Historical and diagnostic
-outputs are labeled separately.
+The frozen grids contain 180 main-cohort, 90 broader-ICU and 18 exploratory
+mortality configurations. The main core was fitted at revision `fcff7c7`.
+Supplementary studies reuse verified core references. The revised display
+books select balanced LR from its separate study.
 
 ## Layout and integrity
 
@@ -81,12 +80,10 @@ runs, altered predictions, stale intervals, mixed study identities, or a pooled
 prediction file inconsistent with its verified fold union. Explicit `--legacy`
 reading supports historical artifacts but does not certify them as definitive.
 
-## Publication bundle
+## Study reporting exports
 
-The portable manuscript workspace contains reading books, editable tables,
-figures and their numeric sources. Its [versioned rebuild code](reporting/manuscript_workspace/README.md)
-updates an unpacked workspace without replacing research data or author
-manuscripts. Generated workspaces and ZIPs remain outside Git.
+See the [display rebuild guide](reporting/manuscript_workspace/README.md) for
+the revised Word books and the earlier portable workspace.
 
 The scoped paper tree contains tables, figures, reports, metadata, and a
 `manifest.json` linking exported files. The principal outputs are:
@@ -100,7 +97,7 @@ The scoped paper tree contains tables, figures, reports, metadata, and a
 | ROC/PR/calibration figures | Pooled outer-test curves and scores; calibration axes cover 0–1 |
 | `reports/report.{md,docx,pdf}` | Consolidated working/supplementary report |
 
-Main model tables prioritize AP, AUROC, Brier score, and paired AP differences.
+Study model tables prioritize AP, AUROC, Brier score, and paired AP differences.
 Supplementary tables retain branch identity and all requested classification
 metrics. Shading and selective bolding are descriptive, not significance marks.
 Fold mean/SD curves are optional supplemental output, explicitly not confidence
@@ -118,20 +115,13 @@ Scoped results and paper tables include:
 | `delong_comparisons.csv` | Design eligibility, numerical status, raw/Holm-adjusted p-values |
 | `comparison_inventory.json` | Coverage, hashes, actual bootstrap-draw identities, and calculation policy |
 
-`comparison_primary` bundles emphasize the six primary whole-case AP contrasts;
-`comparison_families` covers secondary matched-input family comparisons. There
-are 18 unique core contrasts per cohort/outcome/branch. Requested ablations
-retain their same-family `preop_only` dependency. Intervals use shared patient
-resamples and operation-weighted denominators, including all repeat operations.
-Valid replicate counts and uncertainty protocol 3 accompany the requested draw
-count. Intervals condition on saved models; they do not repeat model development.
-
-Ordinary DeLong is unavailable for pooled CV or repeat-patient designs; these
-rows retain `unsupported_design` and missing p-values. Verified independent
-holdouts use guarded calculations and Holm correction. Degenerate results are
-explicit. DCA thresholds are exploratory; `dca_delta_*` figures have pointwise
-bands, while `dca_families_*` compares families. Neither interval overlap nor
-these broad threshold grids establish simultaneous or clinical superiority.
+`comparison_primary` contains the primary whole-operation AP contrasts and
+`comparison_families` the matched-input family contrasts. Uncertainty
+protocol 3 records requested and valid replicate counts. DeLong exports
+retain `unsupported_design` or `degenerate` status where applicable.
+`dca_delta_*` shows paired differences with pointwise bands and
+`dca_families_*` compares families.
+[Statistical definitions](METHODS.md#evaluation-and-statistical-analysis)
 
 ## Descriptives and explanations
 
@@ -159,33 +149,20 @@ Aeon and archived outputs are outside the manuscript pathway.
 
 ## Window-duration pilot and feature audit
 
-The manuscript retains 10-second windows with a nominal five-second stride.
-The subsequent outcome-blinded pilot assessed descriptor stability, without
-evaluating AKI prediction across durations. Its artifact root is
+The frozen pilot completed November 1, 2026. Its artifact root is
 `/media/volume/catch22/data/aki_prediction_project/pilots/window-duration-v2`:
 
-- `REPORT.md`: completed feature audit and 120 paired synthetic challenges.
+- `REPORT.md`: feature audit, 475 matched baseline channels, five extraction
+  rejections and 120 paired synthetic challenges.
 - `control/manifest.json` and `code/`: frozen sample, inputs, methods and software.
 - `channels/`, `grid_diagnostics.json`, `pilot.npz`: channel checkpoints, numerical
-  diagnostics and raw/audited aggregates. Five of 480 channels were rejected by
-  the existing missing-sample rule; 475 matched the frozen 10-second baseline.
+  diagnostics and raw/audited aggregates.
 - `summary/{primary,finite_only,matched,first,middle,final}/`: recorded summaries,
-  descriptor metrics and availability. No primary candidate was selected in any
-  of 2,000 patient-bootstrap draws. All lengths passed the availability gate;
-  40 seconds first achieved 95% coverage for all 24 descriptors in every channel.
+  descriptor metrics and availability.
 
-The interpretation and retained-duration decision are in
-[METHODS.md](METHODS.md#window-duration-rationale-and-retrospective-sensitivity-analysis)
-and the [pilot record](.agent/workflows/window-duration-pilot.md). The frozen
-report and rule remain unchanged; no further duration experiments or gate
-revisions are planned.
-
-Open follow-up: a targeted cross-family interpretation audit of
-`CO_Embed2_Dist_tau_d_expfit_meandiff` in saved windowed AKI models, including all
-CO2/AWP mean/SD/min/max variants and associated missingness indicators. It requires
-verified outer-fold bundles and family-specific explanations, without refitting
-or post-hoc feature removal. Finite fallback zeros are not necessarily waveform
-errors.
+See [Methods](METHODS.md#window-duration-rationale-and-retrospective-sensitivity-analysis)
+for interpretation and the [pilot record](.agent/workflows/window-duration-pilot.md)
+for the numerical rules and open saved-model audit.
 
 ## Optimized extension and protected references
 
@@ -208,15 +185,10 @@ jobs were admitted. Mortality DCA retains its 0.1–5% grid and exploratory stat
 Computational validation does not establish admission-level outcome adjudication
 or clinical validation.
 
-The mortality source-label audit confirmed 52 positive operation records in 47
-patients among 5,765 operations/5,543 patients in each branch (42 patients with
-one positive operation and five with two). Six patients have mixed source
-mortality flags; three also have matching reported stay lengths. These are
-unresolved linkage questions, not confirmed same-admission label errors.
-The source flags match the official API and all 18 saved OOF configurations.
-Operation-level labels and results are retained without first/last-operation
-deduplication or model reruns. See [mortality and admission linkage](METHODS.md#operation-level-mortality-and-admission-linkage)
-for interpretation and the evidence register for audit artifacts.
+The source-label audit confirmed 52 mortality-positive operations in 47
+patients among 5,765 operations and 5,543 patients in each branch.
+[Mortality interpretation](METHODS.md#operation-level-mortality-and-admission-linkage)
+· [Archived label checks](archive/docs/manuscript-reorientation-2026-11-04.md)
 
 Fold metadata records floating prediction dtypes. Checkpoint reload uses those
 dtypes and round-trip CSV parsing so partial resume preserves native XGBoost

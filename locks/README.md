@@ -3,7 +3,7 @@
 These locks record the Linux x86_64 / CPython 3.12.16 environment prepared on
 October 30, 2026, from commit `b75138f`, for Catch24, XGBoost, EBM and pytest.
 The original GPU environment is separate. Scientific equivalence checks are
-recorded in the [study register](../.agent/workflows/manuscript-reorientation.md).
+recorded in the [historical study log](../archive/docs/manuscript-reorientation-2026-11-04.md).
 
 For ordinary recreation, use the [Conda setup](../README.md#environment-and-verification).
 The captured wheels below support exact binary replay.
@@ -52,37 +52,19 @@ All project input/output roots are overridden inside the script, and storage
 enforcement is disabled only for those synthetic validation subprocesses.
 Neither script runs the smoke launcher or accesses original research storage.
 
-Native checks use real libraries in a separate process before pytest: Catch24
-names/order and values against one synthetic Windows Python 3.9 reference
-(`rtol=atol=1e-10`), CPU XGBoost fit/predict/SHAP/save-load, EBM through the
-repository factory (`missing='gain'`, `max_bins=1024`), Plotly HTML and synthetic
-CSV/Markdown/DOCX/PDF creation. Checks verify SHAP additivity, EBM explanation
-values, CSV roundtrip, Markdown/DOCX content, and PDF structure. This does not
-include visual review or optional browser image exports.
-
-These checks use synthetic inputs. Scientific reproduction also requires input
-provenance, cohort/split/schema checks and comparisons with the saved results.
-Environment replay preserves the original GPU environment and research volume.
+Native checks cover the synthetic Windows Python 3.9 Catch24 reference
+(`rtol=atol=1e-10`), CPU XGBoost and SHAP, the EBM factory and explanations,
+and Plotly, CSV, Markdown, Word and PDF exports. Scientific reproduction also
+requires provenance, cohort/split/schema and saved-result comparisons.
 
 ## Verification recorded October 30, 2026
 
-The finalized scripts completed successfully in a new Conda prefix:
-`aki_prediction_project_rebuild_verified`. All 27 Conda builds/checksums,
-66 hashed pip wheels and 70 installed Python distribution versions matched.
-Native checks passed, and the complete offline suite passed **81 tests**.
-The synthetic Catch24 reference matched with maximum absolute difference
-`6.661338147750939e-16`. Inherited output paths remained unused, and inherited
-pytest filters and Python optimization did not weaken the checks. Existing
-environment/evidence paths, including normalized paths, were refused.
-Local logs and native reports are retained under the ignored directory
-`outputs/cpu-validation/2026-10-30/`. No real-data smoke or cloud/storage changes
-were performed. That environment check did not assess research-result equivalence;
-subsequent study checks are recorded in the study register.
-
-The ordinary README setup was also verified in a fresh environment using package
-hosts with pip caching disabled and no local wheelhouse. Installed distribution
-versions matched the snapshot, native checks passed, and all 81 offline tests
-passed. This is the ordinary recreation route.
+In `aki_prediction_project_rebuild_verified`, all 27 Conda builds, 66 wheel
+hashes and 70 distribution versions matched. Native checks and all 81 then-current
+tests passed, with a maximum Catch24 discrepancy of `6.661338147750939e-16`.
+The ordinary Conda setup also matched the distribution snapshot and passed both
+checks using package hosts with no local wheelhouse or pip cache. Evidence is
+under `outputs/cpu-validation/2026-10-30/`.
 
 ## Changing dependencies
 

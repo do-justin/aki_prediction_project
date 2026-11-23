@@ -27,34 +27,14 @@ The manuscript retains 10-second windows with a nominal five-second stride;
 the [duration pilot](../METHODS.md#window-duration-rationale-and-retrospective-sensitivity-analysis)
 did not change production extraction.
 
-## Production signal processing
+## Production definitions
 
-The authoritative rates, filter cutoffs and numerical rules are in
-[METHODS.md](../METHODS.md#waveform-processing). Step 02 and
-`waveform_processing.py` implement this sequence:
-
-1. Load each VitalDB channel on its configured native grid. Try ECG V5 only if
-   ECG II cannot be loaded, not if an already-loaded II later fails quality checks.
-2. Crop the operative segment, reject empty segments or >5% nonfinite samples,
-   and interpolate remaining missing samples, including nearest-endpoint filling.
-3. Filter the whole operative segment with Butterworth SOS forward-backward
-   filtering; resample with the centered anti-alias polyphase FIR when rates change.
-4. Branch into whole-case Catch24 at 10 Hz or 10-second Catch24 windows at
-   100 Hz (ECG/PPG) or 62.5 Hz (CO2/AWP). Aggregate window descriptors by
-   mean/sample SD/min/max. Filters are not applied independently per window.
-
-The windowed stride is nominally five seconds: 500 samples at 100 Hz and
-312 samples (4.992 seconds) at 62.5 Hz. Flat windows are skipped; included-window
-undefined descriptors propagate to their operation summaries. Partial feature
-NaNs are retained for training-fold preprocessing. Finite library fallback
-values are preserved; the pilot's qualification mask does not alter production.
-Spike and saturation detection are not implemented.
-
-Step 02's extraction protocol 3 fingerprints source/settings, cohort bounds,
-package versions, filters, rates, anti-alias policy and missing-value handling.
-Changed or unidentified extraction outputs require a fresh root. Cohort/outcome
-logic is in `step_01_cohort_construction.py` and `aki_cohort.py`; the removed
-`custom_filters` helpers do not define the current pipeline.
+See [waveform processing](../METHODS.md#waveform-processing) for filtering and
+resampling and [feature engineering](../METHODS.md#feature-engineering) for
+branch-specific extraction and missingness. Use a fresh output root when the
+Step 02 extraction fingerprint changes or is missing. Cohort and outcome
+definitions are implemented in `step_01_cohort_construction.py` and
+`aki_cohort.py`.
 
 ## Real-data smoke
 

@@ -1,7 +1,6 @@
 """Human reading copies of complete electronic supplements; raw source CSVs remain intact."""
 from pathlib import Path
 import importlib.util
-import sys
 import shutil
 import pandas as pd
 from rendering_support.table_assets import dataframe_to_markdown, dataframe_to_html, write_pdf_sections
@@ -9,8 +8,7 @@ P=Path(__file__).resolve().parent/'_build';S=P.parent/'inputs'
 spec=importlib.util.spec_from_file_location('table_labels',Path(__file__).with_name('rebuild_tables.py'))
 labels=importlib.util.module_from_spec(spec);spec.loader.exec_module(labels)
 COHORTS={'main_shared':'Main shared cohort','icu_waveform_sensitivity':'Broader ICU cohort'}
-OUTCOMES={'any_aki':'AKI within72hours','icu_admission':'ICU admission','mortality':'In-hospital mortality'}
-OUTCOMES['any_aki']='AKI within 72 hours'
+OUTCOMES={'any_aki':'AKI within 72 hours','icu_admission':'ICU admission','mortality':'In-hospital mortality'}
 BRANCHES={'non_windowed':'Whole case','windowed':'Windowed'}
 MODELS={'logistic_regression':'LR','Logistic regression':'LR','xgboost':'XGBoost','ebm':'EBM'}
 METRICS={'auprc':'AP','auroc':'AUROC','brier':'Brier'}

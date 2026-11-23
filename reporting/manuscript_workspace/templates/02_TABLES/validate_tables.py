@@ -1,6 +1,6 @@
 """Independent data/format checks for the portable manuscript tables."""
 from pathlib import Path
-import hashlib,json,re,subprocess,zipfile,xml.etree.ElementTree as ET
+import hashlib,json,subprocess,zipfile,xml.etree.ElementTree as ET
 import pandas as pd
 HERE=Path(__file__).resolve().parent
 METRICS={'AP':'auprc','AUROC':'auroc','Brier':'brier','Sensitivity':'sensitivity','Specificity':'specificity','Precision':'precision','F1':'f1','Accuracy':'accuracy'}
@@ -104,6 +104,7 @@ def validate(base=HERE):
  assert pdf_checks['main/Table_1_cohort.pdf']==pdf_checks['main/Table_2_core_comparisons.pdf']==1
  checks['a4_pdf_pages']=pdf_checks;checks['off_page_pdf_words']=0
  code=[base/name for name in ('rebuild_tables.py','rebuild_electronic_tables.py','workbook_export.py','rendering_support/table_assets.py')]
+ code.append(base.parent/'05_CODE/table_rendering.py')
  for p in code:
     text=p.read_text();assert not any(v in text for v in ('/home/','/media/','/tmp/','from reporting','from results_recreation')),(p,'VM dependency')
  checks['absolute_vm_dependencies']=0;checks['workbook_validation']='OOXML package structure and all data cells independently round-tripped; desktop Office application not available on this VM.'

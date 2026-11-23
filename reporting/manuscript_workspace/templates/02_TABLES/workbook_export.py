@@ -8,7 +8,7 @@ import json,math,numbers,zipfile,xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 import pandas as pd
 from docx import Document
-from docx.shared import Inches,Pt
+from docx.shared import Inches
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from rendering_support.table_assets import numeric_display_columns

@@ -2,7 +2,6 @@
 from pathlib import Path
 import hashlib
 import json
-import sys
 
 import numpy as np
 import pandas as pd
@@ -21,14 +20,17 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_support():
+def load_support(root=ROOT):
     """Reproduce the saved curve points and count predictions in fixed risk bins."""
-    source_hashes = {str(p.relative_to(ROOT)): sha(p) for p in (REGISTRY, DIAGNOSTICS, CURVES)}
-    index = pd.read_csv(REGISTRY)
+    registry, diagnostics_path, curves_path = (
+        root / path.relative_to(ROOT) for path in (REGISTRY, DIAGNOSTICS, CURVES)
+    )
+    source_hashes = {str(path.relative_to(root)): sha(path) for path in (registry, diagnostics_path, curves_path)}
+    index = pd.read_csv(registry)
     wanted = index[index.cohort_scope.eq('main_shared') & index.branch.eq('non_windowed') & index.feature_set.isin(INPUTS)].copy()
     assert len(wanted) == 12
-    curves = pd.read_csv(CURVES)
-    diagnostics = pd.read_csv(DIAGNOSTICS)
+    curves = pd.read_csv(curves_path)
+    diagnostics = pd.read_csv(diagnostics_path)
     records, checks = [], []
     identities = {}
     edges = np.linspace(0, 1, 41)
@@ -39,9 +41,10 @@ def load_support():
                 row = wanted[wanted.outcome.eq(outcome) & wanted.model.eq(model) & wanted.feature_set.eq(inputs)]
                 assert len(row) == 1
                 entry = row.iloc[0]
-                path = ROOT / entry.offline_prediction_path
-                source_hashes[str(path.relative_to(ROOT))] = sha(path)
-                assert source_hashes[str(path.relative_to(ROOT))] == entry.pooled_prediction_sha256
+                path = root / entry.offline_prediction_path
+                relative_path = str(path.relative_to(root))
+                source_hashes[relative_path] = sha(path)
+                assert source_hashes[relative_path] == entry.pooled_prediction_sha256
                 data = pd.read_csv(path)
                 assert len(data) == 3571 and data.caseid.is_unique
                 assert data.cohort_scope.eq('main_shared').all() and data.validation_scheme.eq('nested_cv').all()
@@ -93,10 +96,10 @@ def load_support():
                                'events': int(data.y_true.sum()), 'curve_bins_verified': 10,
                                'histogram_bins': len(count), 'curve_max_abs_errors': errors,
                                'histogram_count_sum': int(count.sum()), 'diagnostics_verified': list(values),
-                               'pooled_prediction_sha256': source_hashes[str(path.relative_to(ROOT))]})
+                               'pooled_prediction_sha256': source_hashes[relative_path]})
     support = pd.DataFrame(records)
     assert len(support) == 480
-    assert all(sha(ROOT / path) == digest for path, digest in source_hashes.items())
+    assert all(sha(root / path) == digest for path, digest in source_hashes.items())
     return support, checks, source_hashes
 
 

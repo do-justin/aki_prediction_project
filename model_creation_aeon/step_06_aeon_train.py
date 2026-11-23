@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import json
 import logging
 import os
@@ -24,13 +23,14 @@ sys.path.append(str(PROJECT_ROOT))
 # Imports for HPO
 import optuna
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.metrics import average_precision_score
 from sklearn.preprocessing import StandardScaler
 from aeon.transformations.collection.convolution_based import MiniRocket, MultiRocket
 
-from data_preparation.inputs import AEON_OUT_DIR, OUTCOME
-from model_creation_aeon.classifiers import FreshPrinceFused # Keep FreshPrince as is
+from data_preparation.artifact_metadata import file_sha256
+from data_preparation.inputs import AEON_OUT_DIR
+from model_creation_aeon.classifiers import FreshPrinceFused
 from model_creation.postprocessing import (
     apply_logistic_recalibration,
     fit_logistic_recalibration,
@@ -47,21 +47,7 @@ OUTCOME_MAPPING = {
     'mortality': 'y_inhosp_mortality',
     'extended_los': 'y_prolonged_los_postop',
     'icu_admission': 'y_icu_admit',
-    # Fallback for direct column usage or if already mapped
-    'aki_label': 'aki_label',
-    'y_severe_aki': 'y_severe_aki',
-    'y_inhosp_mortality': 'y_inhosp_mortality',
-    'y_prolonged_los_postop': 'y_prolonged_los_postop',
-    'y_icu_admit': 'y_icu_admit'
 }
-
-def compute_file_hash(path: Path) -> str:
-    """Compute the SHA256 hash of a file without loading it fully into memory."""
-    hasher = hashlib.sha256()
-    with path.open("rb") as fp:
-        for chunk in iter(lambda: fp.read(8192), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def load_aeon_data(outcome_name, channels, include_preop):
@@ -388,7 +374,7 @@ def main():
     
     # 1. Load Data
     data = load_aeon_data(args.outcome, args.channels, args.include_preop)
-    Xw_tr, Xp_tr, y_tr, Xw_te, Xp_te, y_te, caseids_tr, caseids_te, subjectids_tr, subjectids_te, df_tr, df_te = data
+    Xw_tr, Xp_tr, y_tr, Xw_te, Xp_te, y_te, caseids_tr, caseids_te, subjectids_tr, subjectids_te, _, _ = data
 
     if args.limit:
         logging.info(f"Limiting usage to {args.limit} samples per split.")
@@ -396,13 +382,11 @@ def main():
         y_tr = y_tr[:args.limit]
         caseids_tr = caseids_tr[:args.limit]
         subjectids_tr = subjectids_tr[:args.limit]
-        df_tr = df_tr.iloc[:args.limit]
 
         Xw_te, Xp_te = Xw_te[:args.limit], (Xp_te[:args.limit] if Xp_te is not None else None)
         y_te = y_te[:args.limit]
         caseids_te = caseids_te[:args.limit]
         subjectids_te = subjectids_te[:args.limit]
-        df_te = df_te.iloc[:args.limit]
 
     logging.info(f"Train size: {len(y_tr)}, Test size: {len(y_te)}")
 
@@ -428,10 +412,9 @@ def main():
         )
         n_splits = max_safe_group_splits
 
-    dataset_hash = compute_file_hash(Path(AEON_OUT_DIR) / 'aki_preop_aeon.csv')
+    dataset_hash = file_sha256(Path(AEON_OUT_DIR) / 'aki_preop_aeon.csv')
 
     # 2. HPO & Training
-    model = None
     best_params = {}
 
     if args.model == 'freshprince':
@@ -454,14 +437,7 @@ def main():
         # Refit Final Model on Full Train
         logging.info("Refitting final model with best params on full training set...")
         
-        # 1. Transform Train (Already done, using returned X_rocket_tr)
-        # X_rocket_tr = transformer.transform(Xw_tr) # Removed redundant transform
-        
-        # 2. Fuse
-        if Xp_tr is not None:
-            X_combined_tr = np.hstack([X_rocket_tr, np.array(Xp_tr, dtype=np.float32)])
-        else:
-            X_combined_tr = X_rocket_tr
+        X_combined_tr = _stack_features(X_rocket_tr, Xp_tr) if Xp_tr is not None else X_rocket_tr
             
         # 3. Scale
         scaler = StandardScaler()
@@ -481,10 +457,7 @@ def main():
         logging.info("Predicting on Test Set...")
         X_rocket_te = transformer.transform(Xw_te)
         
-        if Xp_te is not None:
-             X_combined_te = np.hstack([X_rocket_te, np.array(Xp_te, dtype=np.float32)])
-        else:
-             X_combined_te = X_rocket_te
+        X_combined_te = _stack_features(X_rocket_te, Xp_te) if Xp_te is not None else X_rocket_te
 
         X_scaled_te = scaler.transform(X_combined_te)
         final_prob_raw = final_clf.predict_proba(X_scaled_te)[:, 1]
@@ -494,7 +467,6 @@ def main():
         joblib.dump(transformer, out_dir / 'transformer.pkl')
         joblib.dump(scaler, out_dir / 'scaler.pkl')
         joblib.dump(final_clf, out_dir / 'classifier.pkl')
-        model = "Optuna_Pipeline" # Sentinel
 
     logging.info("Generating out-of-fold predictions for calibration...")
     oof_predictions, fold_indices = generate_oof_predictions(

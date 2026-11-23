@@ -1,7 +1,7 @@
 import os
 import logging
-from multiprocessing import Pool, cpu_count
-from typing import Dict, Any, Tuple, Optional, List
+from multiprocessing import Pool
+from typing import Dict, Any, Tuple, Optional
 import numpy as np
 import pandas as pd
 import time

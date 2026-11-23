@@ -1,7 +1,6 @@
 """Editable mentor guide: narrative purpose, display order and deliberate information density."""
 from pathlib import Path
 import importlib.util,json
-from docx.shared import Pt
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('documents',Path(__file__).with_name('build_manuscript_documents.py'))
 D=importlib.util.module_from_spec(spec);spec.loader.exec_module(D)

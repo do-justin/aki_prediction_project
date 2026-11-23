@@ -12,7 +12,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
-from PIL import Image
 HERE=Path(__file__).resolve().parent
 DATA=HERE/'inputs/metrics_summary.csv'
 FEATURES=['ecg_only','pleth_only','co2_only','awp_only','all_waveforms']
@@ -48,14 +47,7 @@ def main():
     if row==1:ax.set_xlabel('Δ '+label+' (percentage points)')
   fig.legend(handles=[Line2D([0],[0],marker=ps.BRANCHES['non_windowed']['marker'],color=ps.INPUT_COLORS['all_waveforms'],mfc=ps.INPUT_COLORS['all_waveforms'] if ps.BRANCHES['non_windowed']['filled'] else 'white',ls='none',label=ps.BRANCHES['non_windowed']['label']),Line2D([0],[0],marker=ps.BRANCHES['windowed']['marker'],color=ps.INPUT_COLORS['all_waveforms'],mfc=ps.INPUT_COLORS['all_waveforms'] if ps.BRANCHES['windowed']['filled'] else 'white',ls='none',label=ps.BRANCHES['windowed']['label']),Line2D([0],[0],color=ps.color('reference'),ls='--',label='Clinical-only reference')],loc='lower center',bbox_to_anchor=(.5,.015),ncol=3,frameon=False)
   stem='Figure_S1'+part+'_'+label+'_differences'
-  for ext,dpi in [('svg',None),('pdf',None),('eps',None),('png',ps.PNG_DPI),('tiff',ps.TIFF_DPI),('jpg',ps.JPG_DPI)]:
-   kwargs={'dpi':dpi} if dpi else {}
-   if ext=='jpg':kwargs['pil_kwargs']={'quality':ps.JPEG_QUALITY,'subsampling':0}
-   if ext=='tiff':kwargs['pil_kwargs']={'compression':ps.TIFF_COMPRESSION}
-   fig.savefig(HERE/(stem+'.'+ext),facecolor='white',**kwargs)
-   if ext=='tiff':
-    with Image.open(HERE/(stem+'.tiff')) as im:rgb=im.convert('RGB')
-    rgb.save(HERE/(stem+'.tiff'),dpi=(ps.TIFF_DPI,ps.TIFF_DPI),compression=ps.TIFF_COMPRESSION)
+  ps.export_figure(fig, HERE/stem, facecolor='white')
   fig.canvas.draw();r=fig.canvas.get_renderer()
   for text in fig.findobj(matplotlib.text.Text):
    if not text.get_text() or not text.get_visible():continue

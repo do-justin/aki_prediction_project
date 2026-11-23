@@ -1,11 +1,11 @@
 """Check actual publication outputs against the shared appearance profile."""
 from pathlib import Path
-import importlib.util,json,re,xml.etree.ElementTree as ET
+import json,xml.etree.ElementTree as ET
 from docx import Document
 from PIL import Image
 import pandas as pd
-from publication_style import (STYLE_SHA256,STYLE,FONT_FAMILY,WIDTH_MM,PNG_DPI,TIFF_DPI,JPG_DPI,
-                               WORD_FONT,WORD_TABLE_PT,WORD_BODY_PT,color)
+from publication_style import (STYLE_SHA256,WIDTH_MM,PNG_DPI,TIFF_DPI,JPG_DPI,
+                               WORD_FONT,WORD_TABLE_PT,color)
 ROOT=Path(__file__).resolve().parents[1]
 MANIFESTS=['03_FIGURES/paper/figure_manifest.json','03_FIGURES/single_channel_comparison/figure_manifest.json',
  '03_FIGURES/decision_curve/figures/dca_manifest.json','03_FIGURES/narrative_revision/figure_manifest.json',

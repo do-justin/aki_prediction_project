@@ -249,9 +249,15 @@ def test_native_ebm_accepts_grouped_bags_and_preserves_nan_handling():
 
 
 @pytest.mark.parametrize("pathway", ["tune", "crossfit", "final"])
-@pytest.mark.parametrize("family", ["logistic_regression", "xgboost"])
-def test_family_weighting_contract_in_every_fit_path(family, pathway, monkeypatch):
+@pytest.mark.parametrize("family, lr_class_weight", [
+    ("logistic_regression", None), ("logistic_regression", "balanced"), ("xgboost", "balanced"),
+])
+def test_family_weighting_contract_in_every_fit_path(family, lr_class_weight, pathway, monkeypatch):
     seen = []
+    if lr_class_weight is not None:
+        monkeypatch.setenv("AKI_LR_CLASS_WEIGHT", lr_class_weight)
+    else:
+        monkeypatch.delenv("AKI_LR_CLASS_WEIGHT", raising=False)
 
     class CaptureModel:
         def __init__(self, **params):
@@ -262,7 +268,7 @@ def test_family_weighting_contract_in_every_fit_path(family, pathway, monkeypatc
             if family == "xgboost":
                 assert self.params["scale_pos_weight"] == (y == 0).sum() / (y == 1).sum()
             else:
-                assert self.params["class_weight"] is None
+                assert self.params["class_weight"] == lr_class_weight
             seen.append(len(y))
             return self
 
@@ -290,6 +296,49 @@ def test_family_weighting_contract_in_every_fit_path(family, pathway, monkeypatc
     else:
         validation.fit_final_model(X, y, groups=groups, best_params={}, **kwargs)
     assert seen
+
+
+def test_balanced_lr_uses_only_training_labels_and_leaves_recalibration_unweighted(monkeypatch):
+    from model_creation import postprocessing
+
+    n = 48
+    rng = np.random.default_rng(22)
+    groups = pd.Series(np.arange(n))
+    labels = groups.mod(4).eq(0).astype(int)
+    X = pd.DataFrame({"signal": rng.normal(size=n) + 2 * labels})
+    df = pd.DataFrame({"caseid": np.arange(n), "subjectid": groups})
+    train = np.arange(36)
+    test = np.arange(36, n)
+    calibrators = []
+    unmodified_lr = postprocessing.LogisticRegression
+
+    def observe_calibrator(**kwargs):
+        model = unmodified_lr(**kwargs)
+        calibrators.append(model.class_weight)
+        return model
+
+    monkeypatch.setattr(postprocessing, "LogisticRegression", observe_calibrator)
+    monkeypatch.setenv("AKI_LR_CLASS_WEIGHT", "balanced")
+    common = dict(
+        df=df, X=X, caseids=df.caseid, groups=groups, train_idx=train, test_idx=test,
+        outcome="any_aki", branch="non_windowed", feature_set="preop_only", model_type="logistic_regression",
+        model_label="Logistic regression", pipeline_name="test", validation_scheme="nested_cv",
+        n_trials=1, inner_folds=2, calibration_folds=2, random_state=42, preserve_nan=True,
+        threads_per_model=1, repeat_id=0, outer_fold_id=0, return_fitted_model=True, diagnostic=True,
+    )
+    original = validation.run_outer_split(y=labels, **common)
+    perturbed = labels.copy()
+    perturbed.iloc[test] = 1 - perturbed.iloc[test]
+    changed = validation.run_outer_split(y=perturbed, **common)
+
+    assert original.final_model.class_weight == "balanced"
+    assert calibrators == [None, None]
+    assert original.calibration_model == changed.calibration_model
+    assert original.threshold_payload == changed.threshold_payload
+    pd.testing.assert_frame_equal(original.train_predictions, changed.train_predictions)
+    pd.testing.assert_frame_equal(
+        original.test_predictions.drop(columns="y_true"), changed.test_predictions.drop(columns="y_true"),
+    )
 
 
 def test_logistic_convergence_retry_and_failure_are_visible():

@@ -34,6 +34,8 @@ from data_preparation.outcome_registry import (
     TRAINABLE_OUTCOME_SPECS,
 )
 
+from model_creation.preprocessing import CONTINUOUS_PREOP_COLUMNS, RAW_CATEGORICAL_PREOP_COLUMNS
+
 # --- Configuration ---
 RANDOM_STATE = 42
 
@@ -96,61 +98,9 @@ PREOP_FEATURES_TO_SELECT = [
     'preop_lac',
 ]
 
-# Continuous preoperative features retained for reporting/model-time preprocessing.
-CONTINUOUS_COLS = [
-    # Demographics / body size
-    'age',
-    'height',
-    'weight',
-    'bmi',
-
-    # Hematology / coagulation
-    'preop_hb',
-    'preop_plt',
-    'preop_pt',
-    'preop_aptt',
-
-    # Electrolytes / metabolic / liver
-    'preop_na',
-    'preop_k',
-    'preop_gluc',
-    'preop_alb',
-    'preop_ast',
-    'preop_alt',
-    'preop_bun',
-    'preop_cr',
-    'preop_hco3',
-
-    # ABG
-    'preop_ph',
-    'preop_be',
-    'preop_pao2',
-    'preop_paco2',
-    'preop_sao2',
-
-    # Labs from lab_data
-    'preop_wbc',
-    'preop_crp',
-    'preop_lac',
-
-    # Derived continuous features
-    'preop_egfr_ckdepi_2021',
-]
-
-# Raw categorical preoperative features retained for reporting/model-time preprocessing.
-CATEGORICAL_COLS = [
-    'sex',
-    'emop',
-    'department',
-    'approach',
-    'asa',
-    'optype',
-    'ane_type',
-    'preop_htn',
-    'preop_dm',
-    'preop_ecg',
-    'preop_pft',
-]
+# Preserve reporting column order with the model-time predictor schema.
+CONTINUOUS_COLS = list(CONTINUOUS_PREOP_COLUMNS)
+CATEGORICAL_COLS = list(RAW_CATEGORICAL_PREOP_COLUMNS)
 
 # Labs we want to derive preop values for.
 # Names are exactly as in VitalDB lab_data. 

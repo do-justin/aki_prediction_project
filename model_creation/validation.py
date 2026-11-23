@@ -47,6 +47,17 @@ EBM_DIAGNOSTIC_MAX_ROUNDS = 200
 GROUPED_SPLIT_STRATEGY = "minimum_class_count_imbalance_of_64_seeded_candidates"
 
 
+def logistic_regression_class_weight() -> str | None:
+    setting = os.getenv("AKI_LR_CLASS_WEIGHT", "none")
+    if setting not in {"none", "balanced"}:
+        raise ValueError("AKI_LR_CLASS_WEIGHT must be 'none' or 'balanced'.")
+    return None if setting == "none" else setting
+
+
+def logistic_regression_weighting_policy() -> str:
+    return "fold_training_class_weight_balanced" if logistic_regression_class_weight() else "none"
+
+
 @dataclass
 class CachedFold:
     X_train: pd.DataFrame
@@ -193,10 +204,9 @@ def build_validation_fingerprint(
             else "native_nan" if preserve_nan else "training_median"
         ),
         "numeric_scaling": "training_standard_deviation" if model_type == "logistic_regression" else "none",
-        "class_weighting": {
+        "class_weighting": logistic_regression_weighting_policy() if model_type == "logistic_regression" else {
             "xgboost": "fold_training_scale_pos_weight_only",
             "ebm": "fold_training_sample_weight_only",
-            "logistic_regression": "none",
         }.get(model_type, "unknown"),
         "code_revision": revision,
         "code_hash": code_digest.hexdigest(),
@@ -430,7 +440,7 @@ def build_model(
 ) -> Any:
     if model_type == "logistic_regression":
         return LogisticRegression(
-            penalty="l2", solver="lbfgs", class_weight=None,
+            penalty="l2", solver="lbfgs", class_weight=logistic_regression_class_weight(),
             max_iter=5000, random_state=random_state, **params,
         )
     if model_type == "xgboost":

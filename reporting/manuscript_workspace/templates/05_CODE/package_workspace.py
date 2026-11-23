@@ -1,11 +1,9 @@
 """Validate and package the completed writing workspace using relative archive paths."""
 from pathlib import Path
-import csv,json,hashlib,zipfile,xml.etree.ElementTree as ET,subprocess
-from datetime import datetime
+import csv,json,hashlib,zipfile,xml.etree.ElementTree as ET
 from docx import Document
 from publication_style import STYLE_SHA256
 import pandas as pd
-from PIL import Image
 ROOT=Path(__file__).resolve().parents[1]
 
 def sha(p):
@@ -43,7 +41,7 @@ def main():
    k=key+suffix
    assert (abs(joined[k+'_display']-joined[k+'_source'])<1e-12).all(),k
  # Check portable active scripts, excluding archived source/provenance.
- scripts=[ROOT/'03_FIGURES/paper/rebuild_paper_figures.py',ROOT/'03_FIGURES/paper/cohort_support.py',ROOT/'03_FIGURES/single_channel_comparison/rebuild_s1.py',ROOT/'03_FIGURES/decision_curve/rebuild_dca.py',ROOT/'05_CODE/build_manuscript_documents.py',ROOT/'05_CODE/build_publication_proofs.py',ROOT/'05_CODE/build_publication_tables.py',ROOT/'05_CODE/package_publication.py',ROOT/'05_CODE/rebuild_narrative_figures.py',ROOT/'05_CODE/rebuild_roc_supplement.py',ROOT/'05_CODE/rebuild_case_figure.py',ROOT/'05_CODE/build_cohort_context.py',ROOT/'05_CODE/build_story_map.py',ROOT/'05_CODE/publication_style.py',ROOT/'05_CODE/rebuild_publication_workspace.py',ROOT/'05_CODE/validate_publication_style.py',ROOT/'05_CODE/catalogue_reader_text.py',ROOT/'05_CODE/build_calibration_support.py',ROOT/'05_CODE/build_waveform_descriptor_key.py',ROOT/'05_CODE/publication_navigation.py',ROOT/'05_CODE/validate_publication_navigation.py']
+ scripts=[ROOT/'03_FIGURES/paper/rebuild_paper_figures.py',ROOT/'03_FIGURES/paper/cohort_support.py',ROOT/'03_FIGURES/single_channel_comparison/rebuild_s1.py',ROOT/'03_FIGURES/decision_curve/rebuild_dca.py',ROOT/'05_CODE/build_manuscript_documents.py',ROOT/'05_CODE/build_publication_proofs.py',ROOT/'05_CODE/build_publication_tables.py',ROOT/'05_CODE/package_publication.py',ROOT/'05_CODE/rebuild_narrative_figures.py',ROOT/'05_CODE/rebuild_roc_supplement.py',ROOT/'05_CODE/rebuild_case_figure.py',ROOT/'05_CODE/build_cohort_context.py',ROOT/'05_CODE/build_story_map.py',ROOT/'05_CODE/publication_style.py',ROOT/'05_CODE/table_rendering.py',ROOT/'05_CODE/rebuild_publication_workspace.py',ROOT/'05_CODE/validate_publication_style.py',ROOT/'05_CODE/catalogue_reader_text.py',ROOT/'05_CODE/build_calibration_support.py',ROOT/'05_CODE/build_waveform_descriptor_key.py',ROOT/'05_CODE/publication_navigation.py',ROOT/'05_CODE/validate_publication_navigation.py']
  for p in scripts:
   compile(p.read_text(),str(p),'exec')
   assert '/home/exouser/' not in p.read_text() and '/media/volume/' not in p.read_text(),p
