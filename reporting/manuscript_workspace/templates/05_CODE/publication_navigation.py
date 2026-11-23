@@ -1,6 +1,6 @@
 """Portable Word and PDF navigation; no third-party PDF library required."""
 from pathlib import Path
-import json, re, subprocess, tempfile
+import re, subprocess, tempfile
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt

@@ -12,13 +12,13 @@ MARKERS = ("00_START_HERE/READ_ME_FIRST.txt", "04_DATA/prediction_index.csv")
 
 
 def source_files() -> dict[Path, Path]:
-    """Map fixed workspace destinations to versioned source; include shared style once."""
+    """Map workspace destinations to their versioned source files."""
     files = {
         path.relative_to(TEMPLATES): path
         for path in sorted(TEMPLATES.rglob("*"))
         if path.is_file() and "__pycache__" not in path.parts
     }
-    for name in ("publication_style.py", "publication_style.json"):
+    for name in ("publication_style.py", "publication_style.json", "table_rendering.py"):
         files[Path("05_CODE") / name] = REPORTING / name
     return files
 

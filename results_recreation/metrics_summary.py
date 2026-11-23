@@ -351,6 +351,8 @@ def _validate_run_manifest(prediction_sets: List[PredictionSet], path: Path, *, 
         if expected_protocol is None:
             expected_protocol = protocol
         config = config_by_key.get(key, {})
+        if "class_weighting" in config and fingerprint.get("class_weighting") != config["class_weighting"]:
+            raise ValidationError(f"Saved class-weighting policy differs from the run manifest: {metadata_path}")
         if config.get("reuse_reference"):
             try:
                 from model_creation.run_inventory import verify_completed_reference

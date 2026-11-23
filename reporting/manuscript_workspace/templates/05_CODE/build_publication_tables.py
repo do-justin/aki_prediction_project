@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from docx import Document
 from docx.enum.section import WD_ORIENT
-from docx.shared import Inches, Pt
+from docx.shared import Inches
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '02_TABLES'))

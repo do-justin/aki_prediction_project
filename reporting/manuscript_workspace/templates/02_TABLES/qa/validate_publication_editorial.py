@@ -1,6 +1,6 @@
 """Inspect delivered native files independently of rendering style helpers."""
 from pathlib import Path
-import csv,hashlib,json,math,re,subprocess,zipfile,xml.etree.ElementTree as ET
+import hashlib,json,re,subprocess,zipfile,xml.etree.ElementTree as ET
 import pandas as pd
 from lxml import html
 from docx import Document

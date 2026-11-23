@@ -13,14 +13,9 @@ roots and launcher commands. Scientific settings are in
   `experiments --preset core --dry-run`; no data preparation or model fitting.
 - Research execution requires a run request. Start with the authorized scope;
   use the gated core queue, which mixes model families, before supplementary
-  grids. The ICU/mortality cores, 144 main supplementary configurations and
-  72 broader ICU supplementary configurations completed; their isolated runs
-  are recorded in the evidence register. Mortality supplements remain unstarted.
-- Retain 10/5-second windows for this manuscript. The duration pilot completed
-  without selecting a candidate under its full rule; no additional duration
-  ablation or gate tuning is planned. Any follow-up descriptor audit uses saved
-  models; its status is in the [pilot record](window-duration-pilot.md).
+  grids. The [pilot record](window-duration-pilot.md) covers saved-model
+  duration follow-up.
 - Requested real-data smoke uses a fresh disposable root and live VitalDB access.
 - Never overwrite historical artifacts or bypass failed provenance checks.
-- Record verification and run status in
-  [the evidence register](manuscript-reorientation.md).
+- Use run manifests for study status and the [manuscript handoff](manuscript-reorientation.md)
+  for publication decisions.

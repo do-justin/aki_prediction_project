@@ -130,14 +130,7 @@ def save(fig,stem,out,caption,metadata):
     assert not bounds,(stem,bounds)
     assert min(fonts)>=8 and max(fonts)<=12
     out.mkdir(parents=True,exist_ok=True)
-    for ext,dpi in [('svg',None),('pdf',None),('eps',None),('png',ps.PNG_DPI),('tiff',ps.TIFF_DPI),('jpg',ps.JPG_DPI)]:
-      args={'dpi':dpi} if dpi else {}
-      if ext=='jpg':args['pil_kwargs']={'quality':ps.JPEG_QUALITY,'subsampling':0}
-      if ext=='tiff':args['pil_kwargs']={'compression':ps.TIFF_COMPRESSION}
-      fig.savefig(out/f'{stem}.{ext}',**args)
-      if ext=='tiff':
-        with Image.open(out/f'{stem}.{ext}') as im:rgb=im.convert('RGB')
-        rgb.save(out/f'{stem}.{ext}',compression=ps.TIFF_COMPRESSION,dpi=(ps.TIFF_DPI,ps.TIFF_DPI))
+    ps.export_figure(fig, out/stem)
     assert '<image' not in (out/f'{stem}.svg').read_text()
     (out/f'{stem}.caption.txt').write_text(caption+'\n')
     metadata.update({'style_profile_sha256':ps.STYLE_SHA256,'stem':stem,'title':READER_TITLES[stem],'width_mm':float(w),'height_mm':float(h),'font_range_pt':[min(fonts),max(fonts)],'vector_svg_has_no_raster':True,'label_bounds_pass':True,

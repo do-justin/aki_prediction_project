@@ -94,6 +94,30 @@ def apply_mpl_style(profile: str = 'native', **overrides):
     mpl.rcParams.update(mpl_style(profile, **overrides))
 
 
+def export_figure(fig, stem: Path, *, png_only=False, **savefig_kwargs):
+    """Save the portable figure formats at the canvas's native dimensions."""
+    from PIL import Image
+
+    formats = {'png': PNG_DPI} if png_only else {
+        'svg': None, 'pdf': None, 'eps': None, 'png': PNG_DPI, 'tiff': TIFF_DPI, 'jpg': JPG_DPI,
+    }
+    for extension, dpi in formats.items():
+        path = stem.with_name(f'{stem.name}.{extension}')
+        options = savefig_kwargs.copy()
+        if dpi is not None:
+            options['dpi'] = dpi
+        if extension == 'jpg':
+            options['pil_kwargs'] = {'quality': JPEG_QUALITY, 'subsampling': 0}
+        if extension == 'tiff':
+            options['pil_kwargs'] = {'compression': TIFF_COMPRESSION}
+        fig.savefig(path, **options)
+        if extension == 'tiff':
+            with Image.open(path) as raster:
+                rgb = raster.convert('RGB')
+            rgb.save(path, compression=TIFF_COMPRESSION, dpi=(TIFF_DPI, TIFF_DPI))
+    return list(formats)
+
+
 def apply_document_style(document, *, body_size=None):
     """Resolve Word's themed headings explicitly without changing bold data runs."""
     from docx.shared import Pt, RGBColor

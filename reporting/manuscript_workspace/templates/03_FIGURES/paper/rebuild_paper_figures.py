@@ -76,15 +76,7 @@ def save(fig, stem, sources, caption, extras=()):
         if box.x0<-.5 or box.y0<-.5 or box.x1>fig.bbox.width+.5 or box.y1>fig.bbox.height+.5:
             outside.append(text.get_text())
     assert not outside,(stem,'off-canvas labels',outside)
-    for ext,dpi in [('svg',None),('pdf',None),('eps',None),('png',ps.PNG_DPI),('tiff',ps.TIFF_DPI),('jpg',ps.JPG_DPI)]:
-        kw={'dpi':dpi} if dpi else {}
-        if ext=='jpg': kw['pil_kwargs']={'quality':ps.JPEG_QUALITY,'subsampling':0}
-        if ext=='tiff': kw['pil_kwargs']={'compression':ps.TIFF_COMPRESSION}
-        fig.savefig(OUT/f'{stem}.{ext}',**kw)
-        if ext == 'tiff':
-            with Image.open(OUT/f'{stem}.{ext}') as raster:
-                rgb = raster.convert('RGB')
-            rgb.save(OUT/f'{stem}.{ext}', compression=ps.TIFF_COMPRESSION, dpi=(ps.TIFF_DPI,ps.TIFF_DPI))
+    ps.export_figure(fig, OUT/stem)
     plt.close(fig)
     copied=[]
     for source in sources:

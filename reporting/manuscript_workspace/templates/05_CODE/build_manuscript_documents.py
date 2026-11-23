@@ -1,7 +1,7 @@
 """Rebuild editable manuscript books using only files inside this workspace."""
 from pathlib import Path
 from copy import deepcopy
-import json,re,subprocess,shutil,textwrap
+import json,re,shutil
 import pandas as pd
 from docx import Document
 from publication_style import apply_document_style, CAPTION_PT, WIDTH_MM, STYLE_SHA256
@@ -9,7 +9,6 @@ from publication_navigation import bookmark, hyperlink, word_book_footer
 from docx.text.paragraph import Paragraph
 from docx.shared import Mm,Pt
 from docx.enum.section import WD_SECTION_START,WD_ORIENT
-from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'01_MANUSCRIPT';OUT.mkdir(exist_ok=True)

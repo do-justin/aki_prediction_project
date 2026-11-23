@@ -1,38 +1,47 @@
 # Manuscript workspace code
 
-This directory versions the code used by the complete manuscript-workspace ZIP.
-`templates/` mirrors its code locations; the scripts run after being copied into
-that workspace. Research data, generated displays, imported documents and ZIPs
-remain outside Git.
+## Revised Word books
 
-From the repository root, compare an unpacked complete workspace with this code:
+Run from the repository in `aki_prediction_project`. Set `workspace` to the
+unpacked November 4 workspace, `study_root` to the directory containing study
+runs, and `main_display_docx` to the original author file
+`Main_Figures_and_Tables (2).docx`. Use fresh directories for `assets` and
+`display_output`.
+
+```bash
+assets=/path/to/ebm-display-assets
+templates=reporting/manuscript_workspace/templates/05_CODE
+export PYTHONPATH="$PWD:$PWD/reporting${PYTHONPATH:+:$PYTHONPATH}"
+python "$templates/export_icu_ebm_responses.py" --study "$study_root/manuscript-core-v1" --output "$assets/icu_ebm_response_sources.json"
+python "$templates/rebuild_narrative_figures.py" --workspace "$workspace" --ebm-revision-output "$assets"
+python "$templates/rebuild_case_figure.py" --source "$workspace/03_FIGURES/heldout_cases" --revision-output "$assets"
+python -m reporting.manuscript_workspace.revise_publication \
+  --workspace "$workspace" --studies "$study_root" --main-docx "$main_display_docx" \
+  --explainability "$assets" --output "$display_output" \
+  --lr "$study_root/manuscript-lr-balanced-50-v1"
+```
+
+Omit `--lr` to reproduce the frozen unweighted LR displays. The rebuild uses
+saved results and writes Word books, 600 dpi PNGs, source tables and a manifest.
+Render PDF proofs separately with lossless image compression and image
+downsampling disabled.
+
+To reproduce the retired capnogram figure, add `--workspace "$workspace"` to
+the exporter and `--include-retired-response` to the narrative figure rebuild.
+
+## Earlier portable workspace
+
+`templates/` mirrors the code locations in the complete workspace. From the
+repository root, use `--check` to compare the code or `--apply` to update it.
+Then run the portable rebuild in the bundled writing environment with Ghostscript
+and Poppler available.
 
 ```bash
 python -m reporting.manuscript_workspace /path/to/manuscript-workspace --check
-```
-
-To update its code and writing configuration, then rebuild its displays:
-
-```bash
 python -m reporting.manuscript_workspace /path/to/manuscript-workspace --apply
-cd /path/to/manuscript-workspace
-python 05_CODE/rebuild_publication_workspace.py --package
+python /path/to/manuscript-workspace/05_CODE/rebuild_publication_workspace.py --package
 ```
 
-The check is read-only. `--apply` replaces only the versioned code/configuration
-paths; it preserves data, generated displays and author files. A rebuild preserves
-existing manuscript starting documents by default. Running
-`python 05_CODE/build_manuscript_documents.py --refresh-author-material`
-explicitly regenerates those starting files.
-Run the display rebuild in the bundled writing Conda environment; PDF tools
-Ghostscript and Poppler are also required.
-
-The shared appearance files come from `reporting/publication_style.py` and
-`reporting/publication_style.json`, so this template set carries no second copy.
-Other templates cover the figures, native tables, document books, navigation,
-source checks and packaging. Edit templates here for future code changes; use the
-workspace copies to rebuild the paper.
-
-`05_CODE/export_heldout_cases.py` is optional: selecting new cases requires trusted
-saved models and the research repository. The normal rebuild uses bundled case
-CSVs and performs no model, calibrator or threshold fitting.
+The portable rebuild preserves author files, uses the bundled case CSVs and
+performs no fitting. See the [style profile](../publication_style.json) and
+[portable style guide](templates/05_CODE/PUBLICATION_STYLE.md).

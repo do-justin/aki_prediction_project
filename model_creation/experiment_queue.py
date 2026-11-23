@@ -167,6 +167,7 @@ def execute(args) -> int:
         validate_reviewed_extension,
     )
     from model_creation.split_plan import prepare_split_plan
+    from model_creation.validation import logistic_regression_weighting_policy
 
     if args.smoke:
         args = replace_namespace(args, outer_folds=min(args.outer_folds, 2), inner_folds=min(args.inner_folds, 2),
@@ -203,6 +204,8 @@ def execute(args) -> int:
         }
         for config in configs:
             config["resources"] = resource_plan(args, config["model_type"])
+            if config["model_type"] == "logistic_regression":
+                config["class_weighting"] = logistic_regression_weighting_policy()
         contexts[scope] = {"layout": layout, "log": log_file, "manifest": manifest,
                            "path": layout.results_dir / "run_manifest.json"}
         configurations.extend(configs)
@@ -333,8 +336,9 @@ def execute(args) -> int:
                         current = {configuration_key(c): c for c in previous["configurations"]}
                         for c in manifest["configurations"]:
                             old = current.get(configuration_key(c))
-                            if old and (old["n_trials"] != c["n_trials"] or old.get("resources") != c.get("resources")):
-                                raise ValueError("HPO or numerical execution settings changed within the study")
+                            if old and (old["n_trials"] != c["n_trials"] or old.get("resources") != c.get("resources")
+                                        or old.get("class_weighting", "none") != c.get("class_weighting", "none")):
+                                raise ValueError("HPO, class weighting or numerical execution settings changed within the study")
                             current[configuration_key(c)] = c
                         requested = manifest["configurations"]
                         manifest["configurations"] = list(current.values())
