@@ -166,13 +166,23 @@ def _configuration_grid(args) -> list[dict]:
     if args.outcomes is not None and any(item not in defaults for value in args.outcomes for item in _csv_items(value)):
         raise ValueError(f"{args.cohort_scope} supports only {', '.join(defaults)}")
     outcomes = _allowlist(args.outcomes, defaults, defaults, "outcomes")
-    features = _allowlist(args.feature_sets, CORE_FEATURE_SETS if args.preset == "core" else ALL_FEATURE_SETS,
-                          ALL_FEATURE_SETS, "feature sets")
+    eeg = getattr(args, "study_profile", None) == "eeg"
+    if eeg:
+        from model_creation.utils import EEG_CORE_FEATURE_SETS, EEG_FEATURE_SETS
+        core_features, all_features = EEG_CORE_FEATURE_SETS, EEG_FEATURE_SETS
+    else:
+        core_features, all_features = CORE_FEATURE_SETS, ALL_FEATURE_SETS
+    features = _allowlist(args.feature_sets, core_features if args.preset == "core" else all_features,
+                          all_features, "feature sets")
     branches = _allowlist(args.branches, DEFAULT_BRANCHES, DEFAULT_BRANCHES, "branches")
     return [{"model_type": model, "outcome": outcome, "branch": branch, "feature_set": feature,
-             "n_trials": min(args.n_trials or (20 if model == "logistic_regression" else 50), 2) if args.smoke
-                         else args.n_trials or (20 if model == "logistic_regression" else 50)}
+             "n_trials": _trial_count(args, model, eeg)}
             for model in models for outcome in outcomes for branch in branches for feature in features]
+
+
+def _trial_count(args, model: str, eeg: bool) -> int:
+    count = args.n_trials or (20 if model == "logistic_regression" and not eeg else 50)
+    return min(count, 2) if args.smoke else count
 
 
 def _write_manifest(path: Path, payload: dict) -> None:
@@ -340,10 +350,14 @@ def _run_reporting(
     ]
     if manifest_path.exists():
         metrics_args.extend(["--strict", "--run-manifest", str(manifest_path)])
+    if env.get("AKI_STUDY_PROFILE") == "eeg":
+        metrics_args.extend(["--bootstrap-output", str(results_dir / "tables" / "metrics_bootstrap.parquet")])
     if run_module("results_recreation.metrics_summary", metrics_args, env=env, log_handle=log_handle) != 0:
         _emit("Evaluation failed.", log_handle)
         return 1
 
+    if env.get("AKI_STUDY_PROFILE") == "eeg":
+        return 0
     _emit("  > Building reports from standardized artifacts...", log_handle)
     report_args = ["--strict", "--run-manifest", str(manifest_path)] if manifest_path.exists() else []
     if run_module("reporting.make_report", report_args, env=_report_env(env), log_handle=log_handle) != 0:
@@ -384,9 +398,11 @@ def _ensure_data_prepared(
 
     prep_env = dict(env)
     prep_env.update(GENERATE_FULL_FEATURES="True", GENERATE_WINDOWED_FEATURES="True")
+    extractor = ("data_preparation.eeg_extraction" if env.get("AKI_STUDY_PROFILE") == "eeg"
+                 else "data_preparation.step_02_catch_22")
     pipeline = (
         ("data_preparation.step_01_cohort_construction", "Step 01 failed"),
-        ("data_preparation.step_02_catch_22", "Step 02 failed"),
+        (extractor, "Step 02 failed"),
         ("data_preparation.step_03_preop_prep", "Step 03 failed"),
         ("data_preparation.step_04_intraop_prep", "Step 04 failed"),
         ("data_preparation.step_05_data_merge", "Step 05 failed"),
@@ -399,11 +415,84 @@ def _ensure_data_prepared(
 
 
 def _run_experiments(args: argparse.Namespace) -> int:
+    if getattr(args, "study_profile", None) == "eeg":
+        return _run_eeg_experiments(args)
+    if getattr(args, "preflight_only", False):
+        raise ValueError("--preflight-only is available with --study-profile eeg.")
     from model_creation.experiment_queue import execute
     return execute(args)
 
 
+def _run_eeg_experiments(args: argparse.Namespace) -> int:
+    from experimental.eeg.runtime import configure_environment
+
+    if args.diagnostic or args.smoke:
+        raise ValueError("Run EEG diagnostics through the gated smoke --study-profile eeg command.")
+    root = configure_environment(dry_run=args.dry_run)
+    from model_creation.experiment_queue import execute
+
+    if not (args.dry_run or args.report_only):
+        from data_preparation.artifact_metadata import file_sha256
+        from data_preparation.eeg import protocol_fingerprint
+        from data_preparation.eeg_study import TRACK_CATALOG_NAME
+        pilot = root / "pilot" / "protocol_freeze.json"
+        if not pilot.is_file():
+            raise ValueError("Run the blinded eeg-pilot before definitive EEG preparation.")
+        freeze = json.loads(pilot.read_text())
+        if freeze.get("status") != "benchmarked" or freeze.get("protocol") != protocol_fingerprint():
+            raise ValueError("The EEG pilot protocol or resource evidence needs verification.")
+        track_catalog = pilot.parent / TRACK_CATALOG_NAME
+        if not track_catalog.is_file() or ("track_catalog_sha256" in freeze
+                                          and file_sha256(track_catalog) != freeze["track_catalog_sha256"]):
+            raise ValueError("The EEG pilot track catalog is missing or changed.")
+        os.environ["AKI_EEG_TRACK_CATALOG"] = str(track_catalog)
+        if not args.preflight_only:
+            smoke = Path(os.environ["SMOKE_ROOT"]) / "eeg_smoke_passed.json"
+            gate = root / "control/eeg_split_preflight.json"
+            expected = {"status": "validated", "study_identity": _study_identity(),
+                        "split_preflight_sha256": file_sha256(gate)} if gate.is_file() else None
+            if not smoke.is_file() or json.loads(smoke.read_text()) != expected:
+                raise ValueError("Complete the gated EEG diagnostic smoke for the current implementation before definitive fitting.")
+    result = execute(args)
+    if result or args.dry_run or args.preflight_only or args.skip_report:
+        return result
+    if not args.report_only and (args.preset != "full" or args.feature_sets or args.outcomes or args.branches
+                                 or args.cohort_scope or args.cohort_scopes or _resolve_model_types(args) != list(SUPPORTED_MODEL_TYPES)):
+        return 0
+    layout, log_file = _prepare_primary_layout("experiment_log.txt")
+    with _open_log_file(log_file) as log:
+        return run_module("reporting.eeg_study", [
+            "--artifact-root", str(root), "--processed-dir", str(layout.processed_dir),
+        ], env=_report_env(_base_env(layout, log_file=log_file)), log_handle=log)
+
+
+def _run_eeg_smoke(args: argparse.Namespace) -> int:
+    from data_preparation.artifact_metadata import file_sha256
+    from experimental.eeg.runtime import configure_environment, prepare_diagnostic_root
+
+    if args.refresh_links or args.hpo_trials < 1:
+        raise ValueError("EEG smoke requires positive HPO trials and may not refresh repository links.")
+    root = configure_environment()
+    diagnostic = prepare_diagnostic_root(root)
+    from model_creation.experiment_queue import execute
+
+    runner = build_parser().parse_args([
+        "experiments", "--study-profile", "eeg", "--prep", "skip", "--diagnostic", "--smoke",
+        "--feature-sets", "preop_only", "preop_and_all_five", "--bootstrap", "100",
+        "--n-trials", str(args.hpo_trials), "--resume",
+    ])
+    result = execute(runner)
+    if result == 0:
+        _write_manifest(diagnostic / "eeg_smoke_passed.json", {
+            "status": "validated", "study_identity": _study_identity(),
+            "split_preflight_sha256": file_sha256(root / "control/eeg_split_preflight.json"),
+        })
+    return result
+
+
 def _run_smoke(args: argparse.Namespace) -> int:
+    if getattr(args, "study_profile", None) == "eeg":
+        return _run_eeg_smoke(args)
     try:
         model_types = _resolve_model_types(args)
         allowed = SCOPE_OUTCOMES[args.cohort_scope]
@@ -691,6 +780,9 @@ def build_parser() -> argparse.ArgumentParser:
     experiments = subparsers.add_parser("experiments", help="Run the full Catch22 experiment grid.")
     _add_model_type_arguments(experiments, default_model_types=",".join(SUPPORTED_MODEL_TYPES))
     experiments.add_argument("--preset", choices=("full", "core"), default="full")
+    experiments.add_argument("--study-profile", choices=("manuscript", "eeg"), default="manuscript")
+    experiments.add_argument("--preflight-only", action="store_true",
+                             help="Prepare EEG inputs and validate all grouped splits before model admission.")
     experiments.add_argument("--feature-sets", nargs="+", help="Feature allowlist; overrides the preset.")
     experiments.add_argument("--outcomes", nargs="+", help="Outcome allowlist.")
     experiments.add_argument("--branches", nargs="+", help="Processing branch allowlist.")
@@ -767,6 +859,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     smoke = subparsers.add_parser("smoke", help="Run an isolated real-data smoke test.")
+    smoke.add_argument("--study-profile", choices=("manuscript", "eeg"), default="manuscript")
     _add_model_type_arguments(smoke, default_model_types=",".join(SUPPORTED_MODEL_TYPES))
     smoke.add_argument("--cohort-scope", choices=COHORT_SCOPES, default="main_shared")
     smoke.add_argument("--feature-sets", nargs="+", choices=ALL_FEATURE_SETS, default=list(CORE_FEATURE_SETS))
@@ -791,6 +884,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Raw data source for the smoke run.",
     )
     smoke.set_defaults(handler=_run_smoke)
+
+    from experimental.eeg.runtime import run_pilot
+
+    pilot = subparsers.add_parser("eeg-pilot", help="Benchmark EEG extraction using an outcome-blinded sample.")
+    pilot.add_argument("--cases-per-stratum", type=int, choices=range(1, 33), default=4, metavar="N")
+    pilot.set_defaults(handler=run_pilot)
 
     descriptive = subparsers.add_parser("descriptive", help="Generate descriptive figures and tables.")
     descriptive.add_argument("--cohort-scope", choices=COHORT_SCOPES, default="main_shared")

@@ -61,7 +61,7 @@ def is_numeric_predictor(column: str) -> bool:
     return (
         column in CONTINUOUS_PREOP_COLUMNS
         or column == "inpatient_preop"
-        or column.startswith(("SNUADC_", "Primus_"))
+        or column.startswith(("SNUADC_", "Primus_", "BIS_EEG1_WAV_"))
     )
 
 

@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from model_creation.utils import EEG_CORE_FEATURE_SETS as EEG_CORE
 from results_recreation import metrics_summary as metrics
 from results_recreation.delong import gated_delong, add_holm_adjustment
 from reporting.decision_curve import (
@@ -59,6 +60,8 @@ def manifest_identity(manifest):
     # Runtime status/timings change after reporting; scientific selection does not.
     fields = (*CONTEXT[:2], "diagnostic", "branch_rosters", "study_identity", "outer_folds",
               "inner_folds", "calibration_folds", "repeats", "reporting")
+    if manifest.get("study_profile") == "eeg":
+        fields += ("study_profile", "manifest_cohort_id")
     return {**{k: manifest.get(k) for k in fields},
             "configurations": sorted(manifest.get("configurations", []), key=lambda c: json.dumps(c, sort_keys=True))}
 
@@ -108,6 +111,52 @@ def _inventory(context, available):
     for family, feature in sorted(available):
         if family in FAMILIES and feature not in CORE:
             add((family, CORE[0]), (family, feature), "ablation")
+    return entries
+
+
+EEG_INCREMENT_PAIRS = (
+    ("preop_and_original_four", "preop_and_all_five"),
+    ("original_four_waveforms", "all_five_waveforms"),
+)
+EEG_BASELINE_PAIRS = (("preop_only", "preop_and_original_four"), ("preop_only", "preop_and_all_five"))
+
+
+def _eeg_inventory(context, available, requested):
+    entries = []
+    whole_shared = context[0] == "main_shared" and context[3] == "non_windowed"
+
+    def add(reference, candidate, kind, designation="exploratory"):
+        identity = {**dict(zip(CONTEXT, context)), "comparison_type": kind,
+                    "designation": designation, "reference_model": reference[0],
+                    "reference_feature_set": reference[1], "candidate_model": candidate[0],
+                    "candidate_feature_set": candidate[1]}
+        entries.append({**identity, "comparison_id": _digest(identity)[:20],
+                        "availability": "available" if reference in available and candidate in available else "not_requested"})
+
+    for family in FAMILIES:
+        feature_sets = {feature for model, feature in requested if model == family}
+        if not feature_sets:
+            continue
+        for feature in sorted(feature_sets - {"preop_only"}):
+            kind = "ablation" if "_minus_" in feature else "input"
+            designation = ("primary" if whole_shared and feature == "preop_and_all_five" else
+                           "secondary" if whole_shared and feature in EEG_CORE else "exploratory")
+            add((family, "preop_only"), (family, feature), kind, designation)
+        if set(EEG_CORE).issubset(feature_sets):
+            add((family, "original_four_waveforms"), (family, "preop_and_original_four"),
+                "input", "secondary" if whole_shared else "exploratory")
+            add((family, "all_five_waveforms"), (family, "preop_and_all_five"), "input")
+            for reference, candidate in EEG_INCREMENT_PAIRS:
+                add((family, reference), (family, candidate), "eeg_increment",
+                    "primary" if whole_shared else "exploratory")
+        for parent, prefix in (("preop_and_all_five", "preop_and_five_minus_"),
+                               ("preop_and_original_four", "preop_and_four_minus_")):
+            for child in sorted(feature for feature in feature_sets if feature.startswith(prefix)):
+                add((family, child), (family, parent), "ablation_parent")
+    for feature in EEG_CORE:
+        for ref, cand in ((FAMILIES[0], FAMILIES[1]), (FAMILIES[0], FAMILIES[2]), (FAMILIES[1], FAMILIES[2])):
+            if {(ref, feature), (cand, feature)}.issubset(requested):
+                add((ref, feature), (cand, feature), "family", "secondary" if whole_shared else "exploratory")
     return entries
 
 
@@ -185,7 +234,13 @@ def build_comparison_artifacts(prediction_sets, summary, bootstrap, *, n_bootstr
         draw_hash = metrics.bootstrap_draw_hash(indices) if n_bootstrap else "none"
         cluster_counts = cluster_resample_counts(groups, indices)
         del indices
-        context_entries = _inventory(context, available)
+        if run_manifest is not None and run_manifest.get("study_profile") == "eeg":
+            requested = {(config["model_type"], config["feature_set"])
+                         for config in run_manifest["configurations"]
+                         if (config["outcome"], config["branch"]) == context[2:]}
+            context_entries = _eeg_inventory(context, available, requested)
+        else:
+            context_entries = _inventory(context, available)
         entries.extend(context_entries)
         draws, point, samples, curve_points = {}, {}, {}, {}
         thresholds = outcome_thresholds(context[2])
@@ -255,7 +310,7 @@ def build_comparison_artifacts(prediction_sets, summary, bootstrap, *, n_bootstr
     delong = add_holm_adjustment(delong)
     inventory = {"comparison_status": "complete" if all(e["availability"] == "available" for e in entries) else "partial",
                  "comparisons": entries, "available_comparisons": sum(e["availability"] == "available" for e in entries),
-                 "requested_core_comparisons": sum(e["comparison_type"] != "ablation" for e in entries),
+                 "requested_core_comparisons": sum(e["comparison_type"] not in {"ablation", "ablation_parent"} for e in entries),
                  "bootstrap_replicates": int(n_bootstrap), "bootstrap_seed": int(bootstrap_seed),
                  "bootstrap_stratified": bool(stratified_bootstrap), "confidence_level": .95,
                  "uncertainty_status": "estimated" if n_bootstrap >= 2 else "not_estimated",

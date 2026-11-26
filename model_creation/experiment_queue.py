@@ -9,6 +9,7 @@ import sys
 
 import psutil
 
+from data_preparation.artifact_metadata import file_sha256
 from model_creation.config_scheduler import ConfigJob, SchedulerDrained, _drain_requested, default_cpu_budget, run_configurations
 from runtime_resources import available_cpu_count
 
@@ -115,6 +116,7 @@ def _completed_reference(args, config: dict, context: dict, saved: dict | None =
         preserve_nan=True, base_random_state=42, cohort_scope=config["cohort_scope"],
         selected_case_hash=roster["selected_case_hash"], fold_assignment_hash=planned_hash,
         diagnostic=context["manifest"]["diagnostic"],
+        eeg_input_provenance_sha256=roster.get("input_provenance_sha256"),
     )
     expected["thread_environment"] = {
         "OMP_NUM_THREADS": str(resources["threads_per_model"]),
@@ -160,6 +162,81 @@ def _verify_holdout(directory: Path, identity: dict) -> dict:
     return {"status": "verified_diagnostic_holdout", "artifact_sha256": {str(path): file_sha256(path) for path in paths}}
 
 
+def _eeg_expected_keys(scope: str, *, principal: bool = False) -> set[str]:
+    from data_preparation.cohort_scopes import SCOPE_OUTCOMES
+    from model_creation.utils import EEG_CORE_FEATURE_SETS, EEG_FEATURE_SETS
+    from model_creation.run_inventory import configuration_key
+
+    if principal and scope != "main_shared":
+        return set()
+    branches = ("non_windowed",) if principal else ("non_windowed", "windowed")
+    features = EEG_CORE_FEATURE_SETS if principal else EEG_FEATURE_SETS
+    return {
+        configuration_key({"model_type": family, "outcome": outcome, "branch": branch,
+                           "feature_set": feature, "cohort_scope": scope})
+        for family in ("logistic_regression", "xgboost", "ebm")
+        for outcome in SCOPE_OUTCOMES[scope]
+        for branch in branches
+        for feature in features
+    }
+
+
+def _load_or_prepare_eeg_preflight(args, context: dict, control: Path, identity: dict, workers: int) -> dict:
+    from data_preparation.artifact_metadata import ArtifactCompatibilityError
+    from model_creation.split_plan import SplitFeasibilityError, eeg_input_fingerprints, prepare_eeg_split_preflight
+    import run_catch22 as launcher
+
+    layout = context["layout"]
+    gate_path = control / "eeg_split_preflight.json"
+    cache_dir = control / "split_cache"
+    saved = json.loads(gate_path.read_text()) if gate_path.exists() else {}
+    has_frozen_plan = saved.get("status") == "validated"
+    if args.report_only and not has_frozen_plan:
+        raise ValueError("EEG reporting requires a validated definitive split preflight.")
+    if has_frozen_plan and args.prep == "force" and not args.report_only:
+        raise ValueError("A validated EEG study requires a fresh root to rebuild processed inputs.")
+
+    def record_failure(status: str, error: Exception) -> dict:
+        record = {"status": status, "study_identity": identity, "reason": str(error)}
+        if has_frozen_plan:
+            record["checked_at"] = datetime.now(timezone.utc).isoformat()
+            launcher._write_manifest(control / "eeg_split_preflight_last_blocked.json", record)
+        else:
+            launcher._write_manifest(gate_path, record)
+        return record
+
+    try:
+        if has_frozen_plan:
+            if saved.get("study_identity") != identity or any(
+                saved.get(key) != value for key, value in eeg_input_fingerprints(layout.processed_dir).items()
+            ):
+                raise ValueError("Frozen EEG preflight source, data or provenance changed. Select a fresh study root.")
+            if args.report_only:
+                return saved
+            if any(not (cache_dir / name).is_file() or file_sha256(cache_dir / name) != expected
+                   for name, expected in saved["split_cache_sha256"].items()):
+                raise ValueError("Frozen EEG split cache is missing or changed; restore it before resuming.")
+
+        env = launcher._base_env(layout, log_file=context["log"])
+        with launcher._open_log_file(context["log"]) as log:
+            result = (launcher._validate_processed_artifacts(env=env, log_handle=log) if has_frozen_plan
+                      else launcher._ensure_data_prepared(args.prep, env=env,
+                                                          processed_dir=layout.processed_dir, log_handle=log))
+        if result:
+            raise ValueError(f"EEG processed artifacts or source inputs did not pass validation. See {context['log']}.")
+        if has_frozen_plan:
+            return saved
+        result = prepare_eeg_split_preflight(layout.processed_dir, cache_dir, workers=workers)
+    except SplitFeasibilityError as error:
+        return record_failure("infeasible", error)
+    except (ArtifactCompatibilityError, OSError, ValueError) as error:
+        return record_failure("blocked", error)
+
+    record = {"status": "validated", "study_identity": identity, **result}
+    launcher._write_manifest(gate_path, record)
+    return record
+
+
 def execute(args) -> int:
     import run_catch22 as launcher
     from model_creation.run_inventory import (
@@ -168,13 +245,31 @@ def execute(args) -> int:
     )
     from model_creation.split_plan import prepare_split_plan
     from model_creation.validation import logistic_regression_weighting_policy
+    from model_creation.utils import EEG_SCOPE_IDS
 
+    eeg = getattr(args, "study_profile", None) == "eeg"
+    preflight_only = getattr(args, "preflight_only", False)
+    eeg_definitive = eeg and not (args.diagnostic or args.smoke)
+    if preflight_only and (not eeg_definitive or args.report_only):
+        raise ValueError("--preflight-only requires the definitive EEG profile.")
+    if eeg:
+        if os.getenv("AKI_STUDY_PROFILE") != "eeg" or logistic_regression_weighting_policy() != "fold_training_class_weight_balanced":
+            raise ValueError("The EEG launcher must establish the EEG profile and balanced LR before scheduling.")
+        if args.validation_scheme != "nested_cv" or args.reuse_from or args.refresh_links or args.save_final_refit:
+            raise ValueError("EEG requires nested CV, a separate study root, and no manuscript reuse or full-data refit.")
     if args.smoke:
         args = replace_namespace(args, outer_folds=min(args.outer_folds, 2), inner_folds=min(args.inner_folds, 2),
                                  calibration_folds=min(args.calibration_folds, 2), max_workers=1,
                                  threads_per_model=min(args.threads_per_model or 2, 2), blas_threads=1)
-    scopes = args.cohort_scopes or [args.cohort_scope or "main_shared"]
+    scopes = args.cohort_scopes or ([args.cohort_scope] if args.cohort_scope else
+                                    list(EEG_SCOPE_IDS) if eeg else ["main_shared"])
     scopes = list(dict.fromkeys(scopes))
+    if eeg and any(scope not in EEG_SCOPE_IDS for scope in scopes):
+        raise ValueError("The EEG study supports only the shared and broader ICU scopes.")
+    if eeg_definitive and set(scopes) != set(EEG_SCOPE_IDS):
+        raise ValueError("Definitive EEG requests must include both study scopes.")
+    if eeg_definitive and (args.bootstrap, args.bootstrap_seed, args.bootstrap_stratified) != (5000, 0, False):
+        raise ValueError("Definitive EEG reporting requires 5,000 unstratified patient bootstraps with seed 0.")
     if args.rerun_completed and (args.resume or args.reuse_from):
         raise ValueError("--rerun-completed requires --no-resume and no --reuse-from, in a fresh output root")
     if not args.diagnostic and not args.smoke and args.validation_scheme == "nested_cv" and (
@@ -202,7 +297,11 @@ def execute(args) -> int:
             "reporting": {"bootstrap_replicates": min(args.bootstrap, 100) if args.smoke else args.bootstrap,
                           "bootstrap_seed": args.bootstrap_seed, "bootstrap_stratified": args.bootstrap_stratified},
         }
+        if eeg:
+            manifest.update(study_profile="eeg", manifest_cohort_id=EEG_SCOPE_IDS[scope], analysis_role="exploratory")
         for config in configs:
+            if eeg_definitive and config["n_trials"] != 50:
+                raise ValueError("Definitive EEG requires 50 HPO trials for every model family.")
             config["resources"] = resource_plan(args, config["model_type"])
             if config["model_type"] == "logistic_regression":
                 config["class_weighting"] = logistic_regression_weighting_policy()
@@ -275,24 +374,36 @@ def execute(args) -> int:
         raise ValueError("Reuse source must be a different read-only study")
     with launcher._exclusive_run(control / ".controller.lock"):
         control.mkdir(parents=True, exist_ok=True)
+        identity = reuse_target_identity or launcher._study_identity()
+        eeg_preflight = None
+        if eeg_definitive:
+            eeg_preflight = _load_or_prepare_eeg_preflight(
+                args, next(iter(contexts.values())), control, identity, min(8, summary["cpu_budget"])
+            )
+            if eeg_preflight["status"] != "validated":
+                print(f"EEG split preflight {eeg_preflight['status']}: {eeg_preflight['reason']}", file=sys.stderr)
+                return 1
+            if preflight_only:
+                return 0
         epoch = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         scheduler_dir = control / "scheduler" / epoch
-        scheduler_dir.mkdir(parents=True)
-        drain_file = control / "drain-request.json"
-        if drain_file.exists():
-            drain_file.replace(scheduler_dir / "previous-drain-request.json")
-        launcher._write_manifest(control / "active_scheduler.json", {
-            "epoch": epoch, "summary_path": str(scheduler_dir / "scheduler_summary.json"),
-            "admission_policy": summary["admission_policy"], "native_drain": True,
-            "pid": os.getpid(), "create_time": psutil.Process().create_time(),
-        })
+        drain_file = None
+        if not (eeg_definitive and args.report_only):
+            scheduler_dir.mkdir(parents=True)
+            drain_file = control / "drain-request.json"
+            if drain_file.exists():
+                drain_file.replace(scheduler_dir / "previous-drain-request.json")
+            launcher._write_manifest(control / "active_scheduler.json", {
+                "epoch": epoch, "summary_path": str(scheduler_dir / "scheduler_summary.json"),
+                "admission_policy": summary["admission_policy"], "native_drain": True,
+                "pid": os.getpid(), "create_time": psutil.Process().create_time(),
+            })
         if args.rerun_completed and any(c["path"].exists() for c in contexts.values()):
             raise ValueError("Explicit reruns require a fresh output root")
         if catalogs:
             launcher._write_manifest(control / "reused_inventory.json", {"sources": catalogs})
             _copy_verified_split_caches(catalogs, control / "split_cache")
         launcher._write_manifest(control / "execution_plan.json", summary)
-        identity = reuse_target_identity or launcher._study_identity()
         for context in contexts.values():
             if "compatibility_attestation" in context["manifest"]:
                 context["manifest"]["compatibility_attestation"]["target_study_identity"] = identity
@@ -313,19 +424,45 @@ def execute(args) -> int:
                     if not context["path"].exists():
                         raise ValueError("--report-only requires an existing run_manifest.json")
                     saved = json.loads(context["path"].read_text())
+                    if eeg_definitive:
+                        expected_keys = _eeg_expected_keys(scope)
+                        configs = saved["configurations"]
+                        gate_sha256 = file_sha256(control / "eeg_split_preflight.json")
+                        if (saved.get("study_profile") != "eeg" or saved.get("diagnostic") is not False
+                                or saved.get("manifest_cohort_id") != EEG_SCOPE_IDS[scope]
+                                or saved.get("study_identity") != identity
+                                or saved.get("eeg_split_preflight_sha256") != gate_sha256
+                                or saved.get("split_plan") != eeg_preflight["split_plan"]
+                                or len(configs) != len(expected_keys)
+                                or {configuration_key(c) for c in configs} != expected_keys
+                                or not all(_completed_reference(args, c, context, saved) for c in configs)):
+                            raise ValueError(f"EEG reporting requires a complete verified definitive grid for {scope}.")
                     saved["reporting"] = manifest["reporting"]
                     context["manifest"] = manifest = saved
                 else:
                     manifest["study_identity"] = identity
                     # Read-only validation does not create locks in the processed source.
-                    with launcher._exclusive_run(control / ".preparation.lock"):
-                        if launcher._ensure_data_prepared(args.prep, env=env, processed_dir=layout.processed_dir, log_handle=log):
-                            return 1
+                    if eeg_preflight is None:
+                        with launcher._exclusive_run(control / ".preparation.lock"):
+                            if launcher._ensure_data_prepared(args.prep, env=env, processed_dir=layout.processed_dir, log_handle=log):
+                                return 1
+                    branches = ("non_windowed", "windowed") if eeg_definitive else [c["branch"] for c in manifest["configurations"]]
                     manifest["branch_rosters"] = launcher._freeze_branch_rosters(
-                        layout.processed_dir, layout.results_dir, scope, [c["branch"] for c in manifest["configurations"]])
+                        layout.processed_dir, layout.results_dir, scope, branches)
+                    if eeg_preflight is not None:
+                        manifest["eeg_split_preflight_sha256"] = file_sha256(control / "eeg_split_preflight.json")
+                        manifest["split_plan"] = eeg_preflight["split_plan"]
+                        for branch, roster in manifest["branch_rosters"].items():
+                            if roster["dataset_sha256"] != eeg_preflight["dataset_sha256"][branch]:
+                                raise ValueError("EEG dataset changed after validated split preflight.")
+                            roster["input_provenance_sha256"] = eeg_preflight["input_provenance_sha256"][branch]
                     if context["path"].exists():
                         previous = json.loads(context["path"].read_text())
-                        for field in ("study_identity", "validation_scheme", "diagnostic", "outer_folds", "inner_folds", "calibration_folds", "repeats", "branch_rosters"):
+                        fields = ("study_identity", "validation_scheme", "diagnostic", "outer_folds", "inner_folds",
+                                  "calibration_folds", "repeats", "branch_rosters")
+                        if eeg:
+                            fields += ("study_profile", "manifest_cohort_id", "eeg_split_preflight_sha256")
+                        for field in fields:
                             if field == "branch_rosters":
                                 for branch, roster in previous.get(field, {}).items():
                                     if branch in manifest[field] and roster != manifest[field][branch]:
@@ -344,6 +481,8 @@ def execute(args) -> int:
                         manifest["configurations"] = list(current.values())
                         manifest["execution_history"] = previous.get("execution_history", [])
                         if "split_plan" in previous:
+                            if eeg_preflight is not None and previous["split_plan"] != manifest["split_plan"]:
+                                raise ValueError("Previously frozen EEG split plan differs from preflight.")
                             manifest["split_plan"] = previous["split_plan"]
                     else:
                         requested = manifest["configurations"]
@@ -357,15 +496,24 @@ def execute(args) -> int:
                             reference = None
                         if reference:
                             config["completed_reference"] = reference
+                            if eeg:
+                                config["status"] = "verified_reuse"
                             continue
+                        if eeg:
+                            config["status"] = "planned"
                         pending.append(config)
+                    if eeg_definitive and not _eeg_expected_keys(scope, principal=True).issubset(
+                        {configuration_key(c) for c in manifest["configurations"]}
+                    ):
+                        raise ValueError("Run the full EEG preset or EEG core preset before a principal-subset request.")
                     try:
-                        if pending and args.validation_scheme == "nested_cv":
+                        if pending and args.validation_scheme == "nested_cv" and eeg_preflight is None:
                             old_hashes = manifest.get("split_plan", {}).get("fold_assignment_hashes", {})
                             plan = prepare_split_plan(
-                                layout.processed_dir, pending, control / "split_cache", outer_folds=args.outer_folds,
+                                layout.processed_dir, requested if eeg else pending, control / "split_cache", outer_folds=args.outer_folds,
                                 inner_folds=args.inner_folds, calibration_folds=args.calibration_folds,
-                                workers=min(8, summary["cpu_budget"]))
+                                workers=min(8, summary["cpu_budget"]),
+                                matched_branches=eeg and {c["branch"] for c in requested} == {"non_windowed", "windowed"})
                             _verify_reused_fold_plan(plan, manifest["configurations"])
                             plan["fold_assignment_hashes"] = {**old_hashes, **plan.get("fold_assignment_hashes", {})}
                             manifest["split_plan"] = plan
@@ -414,6 +562,10 @@ def execute(args) -> int:
                         raise ValueError(f"Successful child did not save complete artifacts: {directory}")
                 except (ValueError, OSError) as exc:
                     record.update(exit_code=1, status="artifact_validation_failed", error=str(exc))
+            if eeg:
+                config["status"] = "completed" if record["exit_code"] == 0 else "failed"
+                if record["exit_code"] != 0:
+                    config["failure_reason"] = record.get("error") or f"Model process exited with code {record['exit_code']}"
             manifest.setdefault("execution_history", []).append({**config, **record, "finished_at": datetime.now(timezone.utc).isoformat()})
             if record["exit_code"] != 0:
                 failed_scopes.add(config["cohort_scope"])
@@ -424,19 +576,54 @@ def execute(args) -> int:
         def started(record):
             if launcher._study_identity() != identity:
                 raise ValueError("Frozen source/environment changed while scheduling configurations")
+            if eeg:
+                context, config = lookup[record["key"]]
+                config["status"] = "running"
+                launcher._write_manifest(context["path"], context["manifest"])
         def drained():
             for context in contexts.values():
                 context["manifest"]["status"] = "failed" if context["manifest"]["cohort_scope"] in failed_scopes else "drained"
                 launcher._write_manifest(context["path"], context["manifest"])
             return 1 if failed_scopes else 75
-        if jobs:
-            try:
-                run_configurations(jobs, cpu_budget=summary["cpu_budget"], max_concurrent_configs=args.max_concurrent_configs,
+        job_batches = [jobs]
+        if eeg_definitive and not args.report_only:
+            principal_keys = _eeg_expected_keys("main_shared", principal=True)
+            job_batches = [[job for job in jobs if job.key in principal_keys],
+                           [job for job in jobs if job.key not in principal_keys]]
+            if job_batches[1]:
+                scheduled = {job.key for job in job_batches[0]}
+                principal_context = contexts["main_shared"]
+                manifest = principal_context["manifest"]
+                for config in manifest["configurations"]:
+                    key = configuration_key(config)
+                    if key in principal_keys - scheduled:
+                        reference = _completed_reference(args, config, principal_context, manifest)
+                        if not reference:
+                            raise ValueError("Complete the principal EEG core before requesting later configurations.")
+                        config["completed_reference"] = reference
+        try:
+            for batch_id, batch in enumerate(job_batches):
+                if not batch or (eeg_definitive and failed_scopes):
+                    continue
+                run_configurations(batch, cpu_budget=summary["cpu_budget"], max_concurrent_configs=args.max_concurrent_configs,
                                    profile=args.profile_resources, output_dir=scheduler_dir, legacy=args.scheduler == "legacy",
                                    admission_policy=summary["admission_policy"], drain_file=drain_file,
                                    on_started=started, on_finished=finished)
-            except SchedulerDrained:
-                return drained()
+                if len(job_batches) == 2 and batch_id == 0:
+                    scheduler_summary = scheduler_dir / "scheduler_summary.json"
+                    if scheduler_summary.exists():
+                        launcher._write_manifest(scheduler_dir / "principal_scheduler_summary.json",
+                                                 json.loads(scheduler_summary.read_text()))
+        except SchedulerDrained:
+            return drained()
+
+        eeg_grid_complete = True
+        if eeg_definitive and not args.report_only:
+            eeg_grid_complete = not failed_scopes and all(
+                {configuration_key(c) for c in context["manifest"]["configurations"] if c.get("completed_reference")}
+                == _eeg_expected_keys(scope)
+                for scope, context in contexts.items()
+            )
         for scope, context in contexts.items():
             if _drain_requested(drain_file):
                 return drained()
@@ -446,9 +633,9 @@ def execute(args) -> int:
                     manifest["status"] = "failed"
                 print(f"{scope}: validation failed; skipping metrics/report generation")
             else:
-                manifest["status"] = "models_complete"
+                manifest["status"] = "models_complete" if eeg_grid_complete else "partial_complete"
                 launcher._write_manifest(context["path"], manifest)
-                if not args.skip_report:
+                if not args.skip_report and eeg_grid_complete:
                     with launcher._open_log_file(context["log"]) as log:
                         result = launcher._run_reporting(context["layout"].results_dir, args.parallel_backend,
                             env=context["env"], log_handle=log, bootstrap=manifest["reporting"]["bootstrap_replicates"],

@@ -38,7 +38,9 @@ def _bar(table: pd.DataFrame, value: str, destination: Path, title: str):
         return save_report_figure_bundle(fig, destination, close=True)
 
 
-def export_fold_bundle(fold_dir: Path, raw: pd.DataFrame, output_dir: Path) -> list[Path]:
+def export_fold_bundle(
+    fold_dir: Path, raw: pd.DataFrame, output_dir: Path, *, numeric_only: bool = False,
+) -> list[Path]:
     """Explain only the held-out operation roster belonging to one fitted fold."""
     metadata = json.loads((fold_dir / "metadata.json").read_text())
     if metadata.get("status", "completed") != "completed":
@@ -90,7 +92,8 @@ def export_fold_bundle(fold_dir: Path, raw: pd.DataFrame, output_dir: Path) -> l
         path = output_dir / "coefficients.csv"
         coefficients.to_csv(path, index=False)
         paths.append(path)
-        paths.extend(_bar(coefficients, "coefficient", output_dir / "coefficients", title_prefix + "Outer-fold logistic regression coefficients"))
+        if not numeric_only:
+            paths.extend(_bar(coefficients, "coefficient", output_dir / "coefficients", title_prefix + "Outer-fold logistic regression coefficients"))
         metadata["intercept"] = float(model.intercept_[0])
     elif family == "xgboost":
         import shap
@@ -100,28 +103,30 @@ def export_fold_bundle(fold_dir: Path, raw: pd.DataFrame, output_dir: Path) -> l
         metadata["shap_output_scale"] = "raw model log-odds; base value plus feature contributions reconstructs the uncalibrated margin"
         contributions = pd.DataFrame(values, columns=transformed.columns)
         contributions.insert(0, "caseid", predictions["caseid"].to_numpy())
-        path = output_dir / "heldout_shap_values.csv"
+        path = output_dir / ("heldout_shap_values.csv.gz" if numeric_only else "heldout_shap_values.csv")
         contributions.to_csv(path, index=False)
         paths.append(path)
         importance = pd.DataFrame({"feature": transformed.columns, "mean_absolute_SHAP": np.abs(values).mean(axis=0)})
         importance["display_label"] = importance.feature.map(display_labels)
         importance.to_csv(output_dir / "shap_importance.csv", index=False)
-        paths.extend(_bar(importance, "mean_absolute_SHAP", output_dir / "shap_importance", title_prefix + "Held-out outer-fold SHAP"))
-        with report_figure_style_context():
-            shap.summary_plot(values, transformed.rename(columns=display_labels), show=False, max_display=20)
-            if title_prefix:
-                plt.gcf().suptitle(title_prefix + "Held-out outer-fold SHAP")
-            paths.extend(save_report_figure_bundle(plt.gcf(), output_dir / "shap_beeswarm", close=True))
+        if not numeric_only:
+            paths.extend(_bar(importance, "mean_absolute_SHAP", output_dir / "shap_importance", title_prefix + "Held-out outer-fold SHAP"))
+            with report_figure_style_context():
+                shap.summary_plot(values, transformed.rename(columns=display_labels), show=False, max_display=20)
+                if title_prefix:
+                    plt.gcf().suptitle(title_prefix + "Held-out outer-fold SHAP")
+                paths.extend(save_report_figure_bundle(plt.gcf(), output_dir / "shap_beeswarm", close=True))
     elif family == "ebm":
         explanation = model.explain_global()
         global_data = explanation.data()
         importance = pd.DataFrame({"feature": model.term_names_, "importance": model.term_importances()})
         importance["display_label"] = importance.feature.map(_feature_labels(model.term_names_))
         importance.to_csv(output_dir / "term_importance.csv", index=False)
-        paths.extend(_bar(importance, "importance", output_dir / "term_importance", title_prefix + "Outer-fold EBM native term importance"))
+        if not numeric_only:
+            paths.extend(_bar(importance, "importance", output_dir / "term_importance", title_prefix + "Outer-fold EBM native term importance"))
         local = pd.DataFrame(model.eval_terms(transformed), columns=model.term_names_)
         local.insert(0, "caseid", predictions["caseid"].to_numpy())
-        local.to_csv(output_dir / "heldout_term_contributions.csv", index=False)
+        local.to_csv(output_dir / ("heldout_term_contributions.csv.gz" if numeric_only else "heldout_term_contributions.csv"), index=False)
         payload = {"global": global_data, "terms": [],
                    "interpretation": "Native response curves show observed-value bins. Missing and unknown bins are exported separately in special_bins and special_bin_scores.csv; scores are raw model log-odds contributions, not causal effects."}
         special_bins = []
@@ -140,7 +145,7 @@ def export_fold_bundle(fold_dir: Path, raw: pd.DataFrame, output_dir: Path) -> l
             payload["terms"].append({"term": term, "data": term_data, "special_bins": term_special})
             scores = np.asarray(term_data.get("scores", []))
             names = np.asarray(term_data.get("names", []))
-            if scores.ndim != 1 or len(scores) == 0:
+            if numeric_only or scores.ndim != 1 or len(scores) == 0:
                 continue
             x = np.arange(len(scores))
             with report_figure_style_context():

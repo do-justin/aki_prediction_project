@@ -17,6 +17,9 @@ from data_preparation.artifact_metadata import (
     write_artifact_metadata,
 )
 from data_preparation.cohort_scopes import COHORT_SCOPES, build_cohort_manifest, cohort_counts
+from data_preparation.eeg_study import (
+    TRACK_CATALOG_NAME, available_cases, eeg_profile, track_catalog, valid_operation_times, write_source_cohort,
+)
 from data_preparation.inputs import (
     AKI_COHORT_FLOW_MANDATORY_COLUMNS,
     COHORT_FILE,
@@ -25,6 +28,8 @@ from data_preparation.inputs import (
     LAB_DATA_FILE,
     MANDATORY_WAVEFORMS,
     OUTER_COHORT_MANDATORY_COLUMNS,
+    PROCESSED_DIR,
+    RAW_DIR,
     RESULTS_DIR,
     WAVEFORM_SUBSTITUTIONS,
 )
@@ -72,7 +77,9 @@ def _print_missing_percentages(df: pd.DataFrame) -> None:
     print(missing_percentages[missing_percentages > 0].sort_values(ascending=False))
 
 
-def _restrict_to_required_waveforms(df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, object]]]:
+def _restrict_to_required_waveforms(
+    df: pd.DataFrame, catalog: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, list[dict[str, object]]]:
     print(
         "Using vitaldb.find_cases() to find all cases with the "
         f"'{MANDATORY_WAVEFORMS}' waveforms..."
@@ -83,11 +90,13 @@ def _restrict_to_required_waveforms(df: pd.DataFrame) -> tuple[pd.DataFrame, lis
     waveform_counts: list[dict[str, object]] = []
 
     for track_name in MANDATORY_WAVEFORMS:
-        cases_with_wave = vitaldb.find_cases([track_name])
-        if track_name in WAVEFORM_SUBSTITUTIONS:
-            for substitute in WAVEFORM_SUBSTITUTIONS[track_name]:
-                substitute_cases = vitaldb.find_cases([substitute])
-                cases_with_wave = np.union1d(cases_with_wave, substitute_cases)
+        if catalog is None:
+            cases_with_wave = vitaldb.find_cases([track_name])
+            for substitute in WAVEFORM_SUBSTITUTIONS.get(track_name, ()):
+                cases_with_wave = np.union1d(cases_with_wave, vitaldb.find_cases([substitute]))
+        else:
+            names = (track_name, *WAVEFORM_SUBSTITUTIONS.get(track_name, ()))
+            cases_with_wave = sorted(available_cases(catalog, names, suffix=True))
 
         print(
             "Total cases in VitalDB with "
@@ -290,7 +299,12 @@ def main() -> None:
     print(broad_df.head())
     _print_missing_percentages(broad_df)
 
-    broad_df, _ = _restrict_to_required_waveforms(broad_df)
+    catalog = track_catalog(PROCESSED_DIR, create=True) if eeg_profile() else None
+    clinical_eligible = broad_df[valid_operation_times(broad_df)] if catalog is not None else broad_df
+    if catalog is None:
+        broad_df, _ = _restrict_to_required_waveforms(clinical_eligible)
+    else:
+        broad_df, _ = _restrict_to_required_waveforms(clinical_eligible, catalog)
     outer_stages.append(_flow_stage("waveforms", "Required waveform availability", broad_df))
     print(
         "\nYour shared outer cohort with available waveform data now has "
@@ -299,10 +313,17 @@ def main() -> None:
 
     cr_labs = load_creatinine_labs(LAB_DATA_FILE)
 
-    cohort_df = _derive_shared_outcomes(broad_df)
+    cohort_df = _derive_shared_outcomes(clinical_df if catalog is not None else broad_df)
     cohort_df = annotate_aki_eligibility(cohort_df, cr_labs)
     cohort_df = annotate_aki_labels(cohort_df, cr_labs)
     cohort_df = _annotate_non_aki_eligibility(cohort_df)
+    source_hashes = {"clinical_data_sha256": file_sha256(INPUT_FILE),
+                     "lab_data_sha256": file_sha256(LAB_DATA_FILE)}
+    if catalog is not None:
+        candidates = write_source_cohort(PROCESSED_DIR, cohort_df, clinical_eligible, broad_df, catalog)
+        cohort_df = cohort_df[cohort_df["caseid"].isin(candidates)].sort_values("caseid")
+        source_hashes.update(vitaldb_track_catalog_sha256=file_sha256(PROCESSED_DIR / TRACK_CATALOG_NAME),
+                             vitaldb_waveform_release_sha256=file_sha256(RAW_DIR / "SHA256SUMS.txt"))
 
     print("\nAKI eligibility counts:")
     print(cohort_df["eligible_any_aki"].value_counts(dropna=False))
@@ -326,18 +347,19 @@ def main() -> None:
         artifact_role=STEP_01_COHORT_ARTIFACT,
         available_columns=cohort_df.columns,
         extra_metadata={
-            "cohort_profile": "shared_outer",
+            "cohort_profile": "eeg_extraction_candidates" if catalog is not None else "shared_outer",
             "general_anesthesia_only": True,
             "missing_asa_retained": True,
             "outer_cohort": cohort_counts(cohort_df),
             "outer_flow_counts": {"source_file": str(INPUT_FILE), "stages": outer_stages},
-            "source_hashes": {"clinical_data_sha256": file_sha256(INPUT_FILE),
-                              "lab_data_sha256": file_sha256(LAB_DATA_FILE)},
+            "source_hashes": source_hashes,
             "cohort_scopes": {scope: build_cohort_manifest(cohort_df, scope) for scope in COHORT_SCOPES},
         },
     )
     print(f"\nShared cohort saved to {COHORT_FILE}")
 
+    if catalog is not None:
+        return
     aki_flow_counts = _build_aki_flow_counts(department_df, cr_labs)
     aki_flow_counts["cohort_scopes"] = {
         scope: build_cohort_manifest(cohort_df, scope) for scope in COHORT_SCOPES

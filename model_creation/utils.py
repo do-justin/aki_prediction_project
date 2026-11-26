@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
+from functools import lru_cache
 from typing import Tuple, List, Dict, Optional
 from sklearn.model_selection import StratifiedGroupKFold
 
@@ -12,6 +13,7 @@ from data_preparation.artifact_metadata import (
     ArtifactCompatibilityError,
     read_versioned_csv,
 )
+from data_preparation.eeg_study import EEG_SCOPE_IDENTITIES as EEG_SCOPE_IDS, EEG_WAVEFORM, eeg_profile
 from data_preparation.outcome_registry import (
     ALL_ELIGIBILITY_COLUMNS,
     ALL_OUTCOME_COLUMNS,
@@ -52,6 +54,30 @@ WAVEFORM_PREFIXES = {
     'co2': 'Primus_CO2',
     'awp': 'Primus_AWP'
 }
+
+EEG_PREFIX = EEG_WAVEFORM.replace("/", "_")
+EEG_WAVEFORM_PREFIXES = {**WAVEFORM_PREFIXES, "eeg": EEG_PREFIX}
+_EEG_ORIGINAL_GROUPS = tuple(WAVEFORM_PREFIXES)
+_EEG_ALL_GROUPS = tuple(EEG_WAVEFORM_PREFIXES)
+EEG_FEATURE_MEMBERSHIP = {
+    "preop_only": ("preop",),
+    **{f"{name}_only": (name,) for name in _EEG_ALL_GROUPS},
+    "original_four_waveforms": _EEG_ORIGINAL_GROUPS,
+    "all_five_waveforms": _EEG_ALL_GROUPS,
+    **{f"preop_and_{name}": ("preop", name) for name in _EEG_ALL_GROUPS},
+    "preop_and_all_five": ("preop", *_EEG_ALL_GROUPS),
+    **{f"preop_and_five_minus_{name}": ("preop", *(g for g in _EEG_ALL_GROUPS if g != name))
+       for name in _EEG_ORIGINAL_GROUPS},
+    "preop_and_original_four": ("preop", *_EEG_ORIGINAL_GROUPS),
+    **{f"preop_and_four_minus_{name}": ("preop", *(g for g in _EEG_ORIGINAL_GROUPS if g != name))
+       for name in _EEG_ORIGINAL_GROUPS},
+}
+EEG_FEATURE_SETS = tuple(EEG_FEATURE_MEMBERSHIP)
+EEG_CORE_FEATURE_SETS = (
+    "preop_only", "original_four_waveforms", "all_five_waveforms",
+    "preop_and_original_four", "preop_and_all_five",
+)
+APPROVED_PREOP_COLUMNS = frozenset(CONTINUOUS_PREOP_COLUMNS) | frozenset(RAW_CATEGORICAL_PREOP_COLUMNS) | {"inpatient_preop"}
 
 # Continuous preoperative columns.
 CONTINUOUS_PREOP_COLS = [
@@ -132,20 +158,58 @@ def load_data(branch: str) -> pd.DataFrame:
     )
 
     df.attrs["artifact_metadata"] = metadata
-    approved_preop = set(CONTINUOUS_PREOP_COLUMNS) | set(RAW_CATEGORICAL_PREOP_COLUMNS) | {"inpatient_preop"}
-    unexpected = sorted(set(get_feature_sets(df)["preop_only"]) - approved_preop)
-    if unexpected:
-        raise ArtifactCompatibilityError(
-            f"Unapproved preoperative predictor columns in {file_path}: {unexpected}. "
-            "Register their clinical timing and predictor role before model development."
-        )
+    if eeg_profile():
+        if metadata.get("study_profile") != "eeg":
+            raise ArtifactCompatibilityError(f"EEG study requires an EEG-profile merged artifact: {file_path}")
+        get_eeg_feature_sets(df, branch=branch)
+    else:
+        unexpected = sorted(set(get_feature_sets(df)["preop_only"]) - APPROVED_PREOP_COLUMNS)
+        if unexpected:
+            raise ArtifactCompatibilityError(
+                f"Unapproved preoperative predictor columns in {file_path}: {unexpected}. "
+                "Register their clinical timing and predictor role before model development."
+            )
     logger.info(f"Data loaded. Shape: {df.shape}")
     return df
 
-def get_feature_sets(df: pd.DataFrame) -> Dict[str, List[str]]:
+@lru_cache(maxsize=1)
+def catch24_descriptor_names() -> tuple[str, ...]:
+    """Read descriptor names from the same pinned library used by extraction."""
+    import pycatch22
+
+    return tuple(pycatch22.catch22_all(np.sin(np.arange(1000) * 0.1), catch24=True)["names"])
+
+
+def get_eeg_feature_sets(df: pd.DataFrame, *, branch: str | None = None) -> dict[str, list[str]]:
+    preop = [column for column in df.columns if column in APPROVED_PREOP_COLUMNS]
+    if not preop:
+        raise ValueError("The EEG modeling matrix has no approved preoperative predictors.")
+    full = set(catch24_descriptor_names())
+    windowed = {f"{name}_{reducer}" for name in full for reducer in ("mean", "std", "min", "max")}
+    allowed = {"non_windowed": (full,), "windowed": (windowed,), None: (full, windowed)}[branch]
+    observed = {}
+    for group, prefix in EEG_WAVEFORM_PREFIXES.items():
+        observed[group] = [column for column in df.columns if column.startswith(f"{prefix}_")]
+    if df.columns.has_duplicates or not any(
+        all({column.removeprefix(f"{EEG_WAVEFORM_PREFIXES[group]}_") for column in columns} == suffixes
+            for group, columns in observed.items())
+        for suffixes in allowed
+    ):
+        raise ValueError(
+            f"Invalid EEG Catch24 column schema for {branch or 'the modeling matrix'}. "
+            "Every waveform must contain the exact descriptor columns for the same branch."
+        )
+    columns_by_group = {"preop": preop, **observed}
+    return {feature: [column for group in groups for column in columns_by_group[group]]
+            for feature, groups in EEG_FEATURE_MEMBERSHIP.items()}
+
+
+def get_feature_sets(df: pd.DataFrame, *, branch: str | None = None) -> Dict[str, List[str]]:
     """
     Returns a dictionary of available feature sets based on columns in the dataframe.
     """
+    if eeg_profile():
+        return get_eeg_feature_sets(df, branch=branch)
     all_cols = df.columns.tolist()
     feature_sets = {}
 

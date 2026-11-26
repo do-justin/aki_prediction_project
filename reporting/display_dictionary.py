@@ -194,8 +194,10 @@ class DisplayDictionary:
                 label = f"{label} ({aggregate_label})"
 
             # Do not assume every statistic shares the raw signal's unit.
-            # Only an explicitly registered statistic unit is publishable.
-            unit = stat_entry.unit if stat_entry else None
+            # Only explicitly registered dimensional descriptors inherit the waveform unit.
+            waveform = self._waveform_aliases.get(waveform_key)
+            statistic_is_dimensional = isinstance(waveform, dict) and stat_key in waveform.get("dimensional_statistics", ())
+            unit = waveform_entry.unit if waveform_entry and statistic_is_dimensional else (stat_entry.unit if stat_entry else None)
             description = stat_entry.description if stat_entry else None
             return DisplayEntry(label=label, unit=unit, description=description)
 

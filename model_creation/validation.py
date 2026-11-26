@@ -25,7 +25,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.exceptions import ConvergenceWarning
 
 from model_creation import utils
-from data_preparation.artifact_metadata import file_sha256
+from data_preparation.artifact_metadata import file_sha256, metadata_path_for
 from model_creation.postprocessing import (
     LogisticRecalibrationModel,
     apply_logistic_recalibration,
@@ -143,6 +143,7 @@ def build_validation_fingerprint(
     fold_assignment_hash: str = "",
     diagnostic: bool = False,
     calibration_folds: int = 5,
+    eeg_input_provenance_sha256: str | None = None,
 ) -> Dict[str, Any]:
     project_root = Path(__file__).resolve().parents[1]
     code_digest = hashlib.sha256()
@@ -168,7 +169,16 @@ def build_validation_fingerprint(
             environment[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             environment[package] = "unavailable"
+    eeg_identity = {}
+    if os.getenv("AKI_STUDY_PROFILE") == "eeg":
+        eeg_identity["study_profile"] = "eeg"
+        if dataset_hash:
+            path = {"non_windowed": utils.FULL_FEATURES_FILE, "windowed": utils.WINDOWED_FEATURES_FILE}[branch]
+            eeg_identity["eeg_input_provenance_sha256"] = (
+                eeg_input_provenance_sha256 or file_sha256(metadata_path_for(path))
+            )
     return {
+        **eeg_identity,
         "validation_protocol_version": VALIDATION_PROTOCOL_VERSION,
         "checkpoint_bundle_protocol_version": CHECKPOINT_BUNDLE_PROTOCOL_VERSION,
         "dataset_hash": dataset_hash,

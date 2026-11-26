@@ -180,6 +180,13 @@ class FeatureSetDisplay:
                 dd = None
 
         config = _load_components_config(DEFAULT_COMPONENTS_PATH)
+        if os.getenv("AKI_STUDY_PROFILE") == "eeg":
+            from model_creation.utils import EEG_FEATURE_MEMBERSHIP
+
+            config = FeatureComponentsConfig(
+                components=[*config.components, FeatureComponent(key="eeg", label="EEG")],
+                feature_set_map={**config.feature_set_map, **{key: list(channels) for key, channels in EEG_FEATURE_MEMBERSHIP.items()}},
+            )
         return cls(config=config, display_dictionary=dd, default_label_map=default_label_map, mode=None)
 
     def _build_label_map(self) -> Dict[str, str]:

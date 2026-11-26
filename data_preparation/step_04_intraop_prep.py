@@ -15,6 +15,7 @@ from data_preparation.inputs import (
     MANDATORY_WAVEFORMS,
 )
 from data_preparation.artifact_metadata import ArtifactCompatibilityError, file_sha256, metadata_path_for
+from data_preparation.eeg_study import EEG_WAVEFORM, eeg_profile
 from data_preparation.step_02_catch_22 import EXTRACTION_PROTOCOL_VERSION
 
 def process_waveform_file(input_path, output_path, mode_name):
@@ -49,15 +50,23 @@ def process_waveform_file(input_path, output_path, mode_name):
         raise ValueError("Waveform extraction contains missing case/channel identities.")
     if long_df.duplicated(["caseid", "waveform"]).any():
         raise ValueError("Duplicate case/channel pairs cannot be averaged during waveform assembly.")
-    unknown_channels = set(long_df["waveform"]) - set(MANDATORY_WAVEFORMS)
+    channels = MANDATORY_WAVEFORMS
+    protocol_version = EXTRACTION_PROTOCOL_VERSION
+    if eeg_profile():
+        from data_preparation.eeg_extraction import EEG_EXTRACTION_PROTOCOL_VERSION
+        channels = [*channels, EEG_WAVEFORM]
+        protocol_version = EEG_EXTRACTION_PROTOCOL_VERSION
+    unknown_channels = set(long_df["waveform"]) - set(channels)
     if unknown_channels:
         raise ValueError(f"Unexpected waveform channels: {sorted(unknown_channels)}")
     source_meta_path = metadata_path_for(input_path)
     if not source_meta_path.exists():
         raise ArtifactCompatibilityError(f"Waveform source {input_path} lacks extraction provenance.")
     source_metadata = json.loads(source_meta_path.read_text())
-    if source_metadata.get("extraction_protocol_version") != EXTRACTION_PROTOCOL_VERSION or not source_metadata.get("extraction_fingerprint"):
+    if source_metadata.get("extraction_protocol_version") != protocol_version or not source_metadata.get("extraction_fingerprint"):
         raise ArtifactCompatibilityError(f"Waveform source {input_path} lacks a supported extraction fingerprint.")
+    if eeg_profile() and source_metadata.get("data_sha256") != file_sha256(input_path):
+        raise ArtifactCompatibilityError(f"EEG source hash differs for {input_path}.")
 
     waveform_wide_df = long_df.pivot(
         index=id_cols,
@@ -67,7 +76,7 @@ def process_waveform_file(input_path, output_path, mode_name):
     # Retain whole missing channels as NaN instead of silently changing feature
     # set definitions when every extraction of a channel failed.
     waveform_wide_df = waveform_wide_df.reindex(
-        columns=pd.MultiIndex.from_product([feature_cols, MANDATORY_WAVEFORMS])
+        columns=pd.MultiIndex.from_product([feature_cols, channels])
     )
     print(f"Pivot complete. Shape before flattening: {waveform_wide_df.shape}")
 
@@ -88,9 +97,9 @@ def process_waveform_file(input_path, output_path, mode_name):
     waveform_wide_df.to_csv(output_path, index=False)
     channels_by_case = long_df.groupby("caseid")["waveform"].agg(set)
     missing_channels = {
-        str(caseid): sorted(set(MANDATORY_WAVEFORMS) - channels)
-        for caseid, channels in channels_by_case.items()
-        if len(channels) < len(MANDATORY_WAVEFORMS)
+        str(caseid): sorted(set(channels) - observed)
+        for caseid, observed in channels_by_case.items()
+        if len(observed) < len(channels)
     }
     error_pairs = set()
     error_path = Path(source_metadata.get("error_file", "__no_error_file__"))
@@ -116,6 +125,9 @@ def process_waveform_file(input_path, output_path, mode_name):
             "missing_channels_by_caseid": missing_channels,
         },
     }
+    if eeg_profile():
+        metadata["complete_caseids"] = [int(caseid) for caseid, observed in channels_by_case.items()
+                                        if set(channels) == observed]
     metadata_path_for(output_path).write_text(json.dumps(metadata, indent=2, sort_keys=True))
     print(f"Done with {mode_name}.")
 

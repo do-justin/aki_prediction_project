@@ -16,6 +16,7 @@ from data_preparation.artifact_metadata import (
     file_sha256,
 )
 from data_preparation.cohort_scopes import COHORT_SCOPES, LEGACY_STORED_SCOPES, build_cohort_manifest
+from data_preparation.eeg_study import EEG_PROFILE, EEG_SCOPE_IDENTITIES, TRACK_CATALOG_NAME, eeg_profile
 from data_preparation.inputs import (
     COHORT_FILE,
     PREOP_PROCESSED_FILE,
@@ -23,6 +24,7 @@ from data_preparation.inputs import (
     WIDE_FEATURES_WINDOWED_FILE,
     INPUT_FILE,
     LAB_DATA_FILE,
+    RAW_DIR,
 )
 from data_preparation.step_02_catch_22 import COHORT_REQUIRED_COLUMNS, build_extraction_fingerprint
 from data_preparation.outcome_registry import (
@@ -72,12 +74,20 @@ def validate_prepared_artifacts(
     source hashes carried by every prepared artifact. The saved extraction
     cohort and current extraction protocol/settings are required for reuse.
     """
-    cohort, _ = read_versioned_csv(
+    cohort, cohort_metadata = read_versioned_csv(
         cohort_path, artifact_role=STEP_01_COHORT_ARTIFACT,
         required_columns=[*COHORT_REQUIRED_COLUMNS, *COHORT_IDENTITY_COLUMNS],
     )
     metadata_by_path = {}
     derived_scope_manifests = {}
+    profile = eeg_profile()
+    if profile and cohort_metadata.get("cohort_profile") != "eeg_extraction_candidates":
+        raise ArtifactCompatibilityError(f"EEG runs require an experimental extraction cohort: {cohort_path}.")
+    expected_eeg = {}
+    if profile:
+        from data_preparation.eeg_extraction import eeg_fingerprints
+        expected_eeg = eeg_fingerprints(cohort)
+    eeg_order = None
     if preop_path is not None:
         frame, metadata = read_versioned_csv(
             preop_path, artifact_role=STEP_03_PREOP_ARTIFACT, required_columns=PREOP_REQUIRED_COLUMNS
@@ -94,12 +104,19 @@ def validate_prepared_artifacts(
             raise ArtifactCompatibilityError(f"Stale upstream preoperative schema in {path}.")
         if metadata.get("branch") != branch:
             raise ArtifactCompatibilityError(f"Processing branch identity mismatch in {path}.")
+        if (metadata.get("study_profile") == EEG_PROFILE) != profile:
+            raise ArtifactCompatibilityError(f"EEG study profile mismatch in {path}.")
+        if profile:
+            identity_columns = ["caseid", *COHORT_IDENTITY_COLUMNS]
+            if eeg_order is not None and not eeg_order.equals(frame[identity_columns]):
+                raise ArtifactCompatibilityError("EEG modeling tables have different ordered rosters or outcomes.")
+            eeg_order = frame[identity_columns]
         manifests = metadata.get("cohort_scopes", {})
-        derived_scope_manifests[branch] = validate_scope_manifests(frame, manifests, branch, path)
+        derived_scope_manifests[branch] = validate_scope_manifests(frame, manifests, branch, path, eeg=profile)
         extraction_mode = {"non_windowed": "full", "windowed": "windowed"}.get(branch)
         if extraction_mode is None:
             raise ArtifactCompatibilityError(f"Unsupported processing branch {branch!r} in {path}.")
-        expected_fingerprint = build_extraction_fingerprint(cohort, extraction_mode)
+        expected_fingerprint = expected_eeg.get(extraction_mode) if profile else build_extraction_fingerprint(cohort, extraction_mode)
         if metadata.get("extraction_fingerprint") != expected_fingerprint:
             raise ArtifactCompatibilityError(
                 f"Waveform extraction fingerprint mismatch in {path}; use a fresh processed root."
@@ -137,15 +154,18 @@ def validate_prepared_artifacts(
     return derived_scope_manifests
 
 
-def validate_scope_manifests(frame, manifests, branch, path):
+def validate_scope_manifests(frame, manifests, branch, path, *, eeg=False):
     """Validate stored scope contracts and derive new scope overlays read-only.
 
     Only the newly introduced mortality entry may be absent from schema-v5
     sidecars. If present, it must match just as strictly as original entries.
     Callers may persist the returned overlay under their new study root.
     """
-    current = {scope: build_cohort_manifest(frame, scope, branch) for scope in COHORT_SCOPES}
-    for scope in COHORT_SCOPES:
+    scopes = EEG_SCOPE_IDENTITIES if eeg else COHORT_SCOPES
+    current = {scope: build_cohort_manifest(frame, scope, branch) for scope in scopes}
+    for scope in EEG_SCOPE_IDENTITIES if eeg else ():
+        current[scope]["cohort_manifest_identity"] = EEG_SCOPE_IDENTITIES[scope]
+    for scope in scopes:
         if scope in LEGACY_STORED_SCOPES or scope in manifests:
             if manifests.get(scope) != current[scope]:
                 raise ArtifactCompatibilityError(f"Cohort roster/count metadata mismatch for {scope} in {path}.")
@@ -156,11 +176,15 @@ def main() -> None:
     args = _parse_args()
 
     try:
+        sources = {"clinical_data_sha256": INPUT_FILE, "lab_data_sha256": LAB_DATA_FILE}
+        if eeg_profile():
+            sources.update(vitaldb_track_catalog_sha256=COHORT_FILE.parent / TRACK_CATALOG_NAME,
+                           vitaldb_waveform_release_sha256=RAW_DIR / "SHA256SUMS.txt")
         validate_prepared_artifacts(
             None if args.skip_preop else PREOP_PROCESSED_FILE,
             {"non_windowed": WIDE_FEATURES_FILE, "windowed": WIDE_FEATURES_WINDOWED_FILE},
             cohort_path=COHORT_FILE,
-            source_paths={"clinical_data_sha256": INPUT_FILE, "lab_data_sha256": LAB_DATA_FILE},
+            source_paths=sources,
         )
     except (ArtifactCompatibilityError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)

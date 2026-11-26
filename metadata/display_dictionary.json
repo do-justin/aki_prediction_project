@@ -110,6 +110,48 @@
     "preop_and_all_minus_pleth": {
       "label": "Preoperative + all (no plethysmography)"
     },
+    "eeg_only": {
+      "label": "EEG only"
+    },
+    "original_four_waveforms": {
+      "label": "Original four waveforms"
+    },
+    "all_five_waveforms": {
+      "label": "All five waveforms"
+    },
+    "preop_and_eeg": {
+      "label": "Preoperative + EEG"
+    },
+    "preop_and_original_four": {
+      "label": "Preoperative + original four"
+    },
+    "preop_and_all_five": {
+      "label": "Preoperative + all five"
+    },
+    "preop_and_four_minus_pleth": {
+      "label": "Preoperative + original four omitting PPG"
+    },
+    "preop_and_four_minus_ecg": {
+      "label": "Preoperative + original four omitting ECG"
+    },
+    "preop_and_four_minus_awp": {
+      "label": "Preoperative + original four omitting airway pressure"
+    },
+    "preop_and_four_minus_co2": {
+      "label": "Preoperative + original four omitting CO₂"
+    },
+    "preop_and_five_minus_pleth": {
+      "label": "Preoperative + all five omitting PPG"
+    },
+    "preop_and_five_minus_ecg": {
+      "label": "Preoperative + all five omitting ECG"
+    },
+    "preop_and_five_minus_awp": {
+      "label": "Preoperative + all five omitting airway pressure"
+    },
+    "preop_and_five_minus_co2": {
+      "label": "Preoperative + all five omitting CO₂"
+    },
     "all_fused": {
       "label": "All channels (fused)"
     },
@@ -118,6 +160,12 @@
     }
   },
   "waveforms": {
+    "BIS/EEG1_WAV": {
+      "label": "Frontal EEG",
+      "short_label": "EEG",
+      "unit": "µV",
+      "dimensional_statistics": ["DN_Mean", "DN_Spread_Std"]
+    },
     "SNUADC/PLETH": {
       "label": "Plethysmography",
       "short_label": "Pleth",

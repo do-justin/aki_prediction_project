@@ -23,6 +23,7 @@ from data_preparation.artifact_metadata import (
 from data_preparation.cohort_scopes import (
     COHORT_SCOPES, build_cohort_manifest, cohort_counts, select_cohort, selected_case_hash,
 )
+from data_preparation.eeg_study import EEG_PROFILE, EEG_SCOPE_IDENTITIES, eeg_profile, write_attrition
 from data_preparation.inputs import (
     PREOP_PROCESSED_FILE,
     INTRAOP_WIDE_FILE,
@@ -58,7 +59,7 @@ def write_branch_roster_manifest(branch_files: dict[str, Path], output_path: Pat
         for name, path in branch_files.items()
     }
     intersections = {}
-    for scope in COHORT_SCOPES:
+    for scope in EEG_SCOPE_IDENTITIES if eeg_profile() else COHORT_SCOPES:
         selected = {name: select_cohort(frame, scope) for name, frame in branches.items()}
         common_caseids = set.intersection(*(set(frame["caseid"]) for frame in selected.values()))
         common = next(iter(selected.values())).loc[lambda frame: frame["caseid"].isin(common_caseids)]
@@ -84,6 +85,7 @@ def merge_and_save(
     *,
     preop_metadata: Optional[dict] = None,
     require_intraop_metadata: bool = False,
+    complete_caseids: set[int] | None = None,
 ):
     print(f"\n--- Merging {mode_name} Data ---")
     print(f"Intraop Input: {intraop_path}")
@@ -111,8 +113,16 @@ def merge_and_save(
         if intraop_metadata.get("data_sha256") != file_sha256(intraop_path):
             raise ArtifactCompatibilityError(f"Waveform artifact hash mismatch for {intraop_path}.")
         fingerprint = intraop_metadata.get("extraction_fingerprint")
-        if not isinstance(fingerprint, dict) or fingerprint.get("extraction_protocol_version") != EXTRACTION_PROTOCOL_VERSION:
+        protocol_version = EXTRACTION_PROTOCOL_VERSION
+        if complete_caseids is not None:
+            from data_preparation.eeg_extraction import EEG_EXTRACTION_PROTOCOL_VERSION
+            protocol_version = EEG_EXTRACTION_PROTOCOL_VERSION
+        if not isinstance(fingerprint, dict) or fingerprint.get("extraction_protocol_version") != protocol_version:
             raise ArtifactCompatibilityError(f"Stale waveform extraction protocol for {intraop_path}.")
+    if complete_caseids is not None:
+        if not complete_caseids.issubset(intraop_df["caseid"]):
+            raise ArtifactCompatibilityError(f"Strict EEG roster is missing operations in {intraop_path}.")
+        intraop_df = intraop_df[intraop_df["caseid"].isin(complete_caseids)].sort_values("caseid")
 
     # 2. Merge
     print("Merging with preoperative data...")
@@ -139,9 +149,10 @@ def merge_and_save(
     # Small programmatic utility tests may supply only a subset of outcome/ID
     # columns; production main() always requires the full versioned schema.
     if {"subjectid", "eligible_any_aki", "aki_label", "eligible_icu_admission", "y_icu_admit"}.issubset(master_df):
-        cohort_manifests = {
-            scope: build_cohort_manifest(master_df, scope, branch) for scope in COHORT_SCOPES
-        }
+        scopes = EEG_SCOPE_IDENTITIES if complete_caseids is not None else COHORT_SCOPES
+        cohort_manifests = {scope: build_cohort_manifest(master_df, scope, branch) for scope in scopes}
+        for scope in EEG_SCOPE_IDENTITIES if complete_caseids is not None else ():
+            cohort_manifests[scope]["cohort_manifest_identity"] = EEG_SCOPE_IDENTITIES[scope]
     
     # 3. Check for Merge Issues
     merge_nan_count = master_df.isnull().sum().sum()
@@ -175,6 +186,7 @@ def merge_and_save(
             "source_cohort_scopes": (preop_metadata or {}).get("cohort_scopes", {}),
             "extraction_fingerprint": intraop_metadata.get("extraction_fingerprint"),
             "extraction_diagnostics": intraop_metadata.get("extraction_diagnostics", {}),
+            **({"study_profile": EEG_PROFILE} if complete_caseids is not None else {}),
         },
     )
     print(f"Done with {mode_name}.")
@@ -218,6 +230,16 @@ def main(impute_missing: Optional[bool] = None):
         (INTRAOP_WIDE_FILE, WIDE_FEATURES_FILE, "Full Features"),
         (INTRAOP_WIDE_WINDOWED_FILE, WIDE_FEATURES_WINDOWED_FILE, "Windowed Features")
     ]
+    complete_caseids = None
+    if eeg_profile():
+        branch_complete = {}
+        for branch, path in (("non_windowed", INTRAOP_WIDE_FILE), ("windowed", INTRAOP_WIDE_WINDOWED_FILE)):
+            metadata = json.loads(metadata_path_for(path).read_text())
+            if metadata.get("data_sha256") != file_sha256(path) or "complete_caseids" not in metadata:
+                raise ArtifactCompatibilityError(f"Missing or stale EEG channel-success metadata for {path}.")
+            branch_complete[branch] = set(metadata["complete_caseids"])
+        complete_caseids = set.intersection(*branch_complete.values())
+        write_attrition(WIDE_FEATURES_FILE.parent, complete_caseids, branch_complete=branch_complete)
     
     for intraop_p, output_p, name in tasks:
         merge_and_save(
@@ -228,6 +250,7 @@ def main(impute_missing: Optional[bool] = None):
             impute_missing,
             preop_metadata=preop_metadata,
             require_intraop_metadata=True,
+            complete_caseids=complete_caseids,
         )
 
     if WIDE_FEATURES_FILE.exists() and WIDE_FEATURES_WINDOWED_FILE.exists():
