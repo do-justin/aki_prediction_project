@@ -15,6 +15,18 @@ from data_preparation.step_04_intraop_prep import process_waveform_file
 from experimental.eeg.runtime import _require_isolation
 
 
+def test_frozen_catalog_initializes_fresh_processed_directory(monkeypatch, tmp_path):
+    frozen = tmp_path / "pilot-tracks.csv"
+    frozen.write_text("caseid,tname,tid\n9,BIS/EEG1_WAV,track123\n")
+    processed = tmp_path / "new-study" / "data" / "processed"
+    monkeypatch.setenv("AKI_EEG_TRACK_CATALOG", str(frozen))
+
+    catalog = eeg_study.track_catalog(processed, create=True)
+
+    assert eeg_study.available_cases(catalog, ("BIS/EEG1_WAV",)) == {9}
+    assert (processed / eeg_study.TRACK_CATALOG_NAME).read_bytes() == frozen.read_bytes()
+
+
 @pytest.mark.parametrize("content", ("Time,Value\n0,1\n,2\n0.04,3\n", "Time,Value\n0,1\n0.02,2\n0.04,3\n"))
 def test_frozen_original_track_reader_preserves_vitaldb_grid(monkeypatch, tmp_path, content):
     path = tmp_path / "track.csv.gz"

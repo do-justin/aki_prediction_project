@@ -45,6 +45,8 @@ def write_csv(path: Path, frame: pd.DataFrame) -> None:
 def track_catalog(processed: Path, *, create: bool = False) -> pd.DataFrame:
     """Freeze the VitalDB track-to-case map used by both source selection and W4 loading."""
     path = processed / TRACK_CATALOG_NAME
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
     frozen = os.getenv("AKI_EEG_TRACK_CATALOG") if create else None
     if frozen:
         frozen_path = Path(frozen)
