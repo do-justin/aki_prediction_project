@@ -4,7 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data_preparation.artifact_metadata import STEP_05_MERGED_ARTIFACT, file_sha256, write_artifact_metadata
+from data_preparation.artifact_metadata import (
+    STEP_05_MERGED_ARTIFACT, file_sha256, read_versioned_csv, write_artifact_metadata,
+)
 from model_creation import split_plan, utils
 from model_creation.experiment_queue import _eeg_expected_keys
 from model_creation.preprocessing import FoldPreprocessor
@@ -58,6 +60,23 @@ def test_eeg_descriptor_remains_numeric_with_csv_string_values():
     assert preprocessor.categorical_columns_ == []
     assert preprocessor.transform(data)[name].tolist()[0] == 3
     assert np.isnan(preprocessor.transform(data)[name].iloc[1])
+
+
+def test_eeg_merged_csv_infers_preop_types_consistently_across_branch_widths(tmp_path):
+    ages = [">89", *(["60"] * 2399)]
+    preop = {}
+    for branch in ("non_windowed", "windowed"):
+        df = pd.DataFrame(1.0, index=range(len(ages)), columns=_waveform_columns(branch))
+        df["age"] = ages
+        path = split_plan.merged_branch_path(tmp_path, branch)
+        df.to_csv(path, index=False)
+        write_artifact_metadata(path, artifact_role=STEP_05_MERGED_ARTIFACT, available_columns=df.columns,
+                                extra_metadata={"study_profile": "eeg"})
+        loaded, _ = read_versioned_csv(path, artifact_role=STEP_05_MERGED_ARTIFACT, required_columns=["age"])
+        preop[branch] = loaded["age"]
+
+    pd.testing.assert_series_equal(preop["non_windowed"], preop["windowed"])
+    assert preop["windowed"].tolist() == ages
 
 
 def _write_eeg_branches(processed, *, mismatch=False):

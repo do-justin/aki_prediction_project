@@ -175,6 +175,10 @@ def read_versioned_csv(
         required_columns=required_columns,
     )
 
+    if artifact_role == STEP_05_MERGED_ARTIFACT and metadata.get("study_profile") == "eeg":
+        # Infer types across all rows so branch width cannot change how ages such as >89 are read.
+        read_csv_kwargs.setdefault("low_memory", False)
+
     try:
         df = pd.read_csv(data_path, **read_csv_kwargs)
     except FileNotFoundError:
