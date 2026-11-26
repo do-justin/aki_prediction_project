@@ -11,7 +11,8 @@ from artifact_paths import DEFAULT_ARTIFACT_ROOT, DEFAULT_MEDIA_ROOT, path_is_wi
 
 BASELINE_REPO = Path("/home/exouser/projects/aki_prediction_project")
 PRESERVATION_ROOT = Path("/home/exouser/codex-handoffs/joms-manuscript-pre-eeg-2026-11-25")
-DEFAULT_STUDY_ROOT = DEFAULT_ARTIFACT_ROOT / "studies/eeg-feasibility-v1"
+ORIGINAL_EEG_ROOT = DEFAULT_ARTIFACT_ROOT / "studies/eeg-feasibility-v1"
+DEFAULT_STUDY_ROOT = DEFAULT_ARTIFACT_ROOT / "studies/eeg-feasibility-pycatch22-1.0.2-v1"
 DEFAULT_RAW_ROOT = DEFAULT_MEDIA_ROOT / "projects/aki_prediction_project/data/raw"
 LAYOUT_OVERRIDES = {
     "DATA_DIR": "data", "PROCESSED_DIR": "data/processed",
@@ -21,7 +22,7 @@ LAYOUT_OVERRIDES = {
 
 
 def _require_isolation(root: Path, paths: dict[str, Path], raw: Path) -> None:
-    protected = [raw, DEFAULT_RAW_ROOT, BASELINE_REPO, PRESERVATION_ROOT,
+    protected = [raw, DEFAULT_RAW_ROOT, BASELINE_REPO, PRESERVATION_ROOT, ORIGINAL_EEG_ROOT,
                  *DEFAULT_STUDY_ROOT.parent.glob("manuscript-*")]
     for name, path in {"study_root": root, **paths}.items():
         if not path_is_within(path, root):
@@ -39,6 +40,10 @@ def _require_isolation(root: Path, paths: dict[str, Path], raw: Path) -> None:
 
 def configure_environment(*, dry_run: bool = False, root_override: Path | None = None) -> Path:
     """Establish a single safe write boundary before importing profile consumers."""
+    from importlib.metadata import version
+
+    if version("pycatch22") != "1.0.2":
+        raise ValueError("This EEG upgrade worktree requires the pinned pycatch22 1.0.2 candidate environment.")
     root = (root_override or Path(os.getenv("AKI_ARTIFACT_ROOT", DEFAULT_STUDY_ROOT))).expanduser()
     if root.is_symlink():
         raise ValueError(f"EEG study root may not be a symbolic link: {root}")

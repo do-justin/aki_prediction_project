@@ -5,8 +5,8 @@ worktree="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$worktree"
 project_conda="${AKI_CONDA_INIT:-/home/exouser/miniforge3/etc/profile.d/conda.sh}"
 source "$project_conda"
-conda activate aki_prediction_project
-export AKI_ARTIFACT_ROOT="${AKI_ARTIFACT_ROOT:-/media/volume/catch22/data/aki_prediction_project/studies/eeg-feasibility-v1}"
+conda activate aki_prediction_project_eeg_pycatch102
+export AKI_ARTIFACT_ROOT="${AKI_ARTIFACT_ROOT:-/media/volume/catch22/data/aki_prediction_project/studies/eeg-feasibility-pycatch22-1.0.2-v1}"
 export RAW_DIR="${RAW_DIR:-/media/volume/catch22/projects/aki_prediction_project/data/raw}"
 export PYTHONDONTWRITEBYTECODE=1
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1

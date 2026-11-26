@@ -2,10 +2,18 @@
 
 This worktree runs the separate VitalDB EEG feasibility analysis. The [original handoff](VitalDB_EEG_Codex_Handoff.md) records the study design and evidence for each QC choice. The EEG study uses the established preoperative variables, AKI and ICU labels, and Catch24 model families. It adds timestamped native EEG and restricts comparisons to a shared five-modality roster in both branches.
 
+## Extractor upgrade
+
+This revision uses `pycatch22 1.0.2` in a separate locked Conda environment and study root. The original `0.4.5` extraction was paused after 35 operation checkpoints. Its code, environment, artifacts and pause record remain under the original branch and study root.
+
+The upgrade retains 128 Hz EEG, the signal-quality protocol, the original waveform sources, and the grouped validation design. It recomputes all five waveform groups with the native 1.0.2 descriptor definitions and order. Explicit `mask_nans=False` preserves undefined descriptors and their window aggregation behavior. Descriptor values can change across versions, including periodicity and embedding distance. Historical feature, model, and split artifacts are version-specific. Verified raw track responses and the frozen track catalog can be copied independently.
+
+In the outcome-blinded comparison, whole-operation Catch24 on one 4-hour-25-minute 128 Hz record took 21 seconds with 1.0.2 and 19 minutes 40 seconds in the 0.4.5 pilot. Three 10-minute excerpts showed 9–14× speedups. The new routine can exit early after the first qualifying periodicity peak, so the gain varies by waveform. The other pinned dependencies passed the lock audit and carry over to this revision.
+
 ## Execution checklist
 
 - [x] Preserve the manuscript baseline (`ab39e021468c692fd31e9b3d62f7637d24c4cfaa`) and historical core fitting revision (`fcff7c7c9794e0ea8405814c68176760a2eb9afc`). The local baseline tag is `joms-manuscript-pre-eeg-2026-11-25`. The verified recovery copy is at `/home/exouser/codex-handoffs/joms-manuscript-pre-eeg-2026-11-25`, with a file and display-source inventory, Git bundles, binary replay inputs, and the author document at revision 3160. The release checksum catalog identifies the read-only waveform files.
-- [x] Implement and verify the isolated EEG profile. The original extraction files retain their tracked hashes. The four original waveforms use the pinned VitalDB loader's numerical gridding and a frozen public-track cache. EEG reads native local packets and retains the actual observation clock for SQI.
+- [x] Implement the isolated EEG extractor upgrade. The original branch and study remain available. The four original waveforms use the pinned VitalDB loader's numerical gridding and a frozen public-track cache. EEG reads native local packets and retains the actual observation clock for SQI.
 - [ ] Complete and inspect the blinded pilot. Review `pilot/pilot_cases.csv`, the raw/cleaned examples, QC records, and the protocol fingerprint. Review timestamps, units, gap shape, and resources before preparing the definitive cohort.
 - [ ] Complete both feature branches and the joint split preflight. Review `data/processed/eeg_attrition.json` and `control/eeg_split_preflight.json`. A split failure in any combination blocks fitting for the entire study.
 - [ ] Complete isolated diagnostic fits and reporting in `diagnostic/`. The diagnostic marker binds to the exact code and validated split gate.
@@ -14,13 +22,13 @@ This worktree runs the separate VitalDB EEG feasibility analysis. The [original 
 
 ## Commands
 
-Run these commands from the EEG worktree in `aki_prediction_project`. The launcher uses the study root below by default and resolves every write within it.
+Run these commands from the EEG upgrade worktree. The launcher uses the study root below by default and resolves every write within it.
 
 ```bash
 source /home/exouser/miniforge3/etc/profile.d/conda.sh
-conda activate aki_prediction_project
+conda activate aki_prediction_project_eeg_pycatch102
 export RAW_DIR=/media/volume/catch22/projects/aki_prediction_project/data/raw
-export AKI_ARTIFACT_ROOT=/media/volume/catch22/data/aki_prediction_project/studies/eeg-feasibility-v1
+export AKI_ARTIFACT_ROOT=/media/volume/catch22/data/aki_prediction_project/studies/eeg-feasibility-pycatch22-1.0.2-v1
 
 python -B -m run_catch22 experiments --study-profile eeg --dry-run
 python -B -m run_catch22 eeg-pilot

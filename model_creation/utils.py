@@ -175,9 +175,9 @@ def load_data(branch: str) -> pd.DataFrame:
 @lru_cache(maxsize=1)
 def catch24_descriptor_names() -> tuple[str, ...]:
     """Read descriptor names from the same pinned library used by extraction."""
-    import pycatch22
+    from data_preparation.catch24 import descriptor_names
 
-    return tuple(pycatch22.catch22_all(np.sin(np.arange(1000) * 0.1), catch24=True)["names"])
+    return descriptor_names()
 
 
 def get_eeg_feature_sets(df: pd.DataFrame, *, branch: str | None = None) -> dict[str, list[str]]:

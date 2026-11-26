@@ -5,7 +5,7 @@ from importlib.metadata import version
 from pathlib import Path
 import sys
 
-import pycatch22
+from data_preparation.catch24 import extract_catch24
 
 
 def fixture_signal():
@@ -18,7 +18,7 @@ def fixture_signal():
 
 
 def extract():
-    result = pycatch22.catch22_all(fixture_signal(), catch24=True)
+    result = extract_catch24(fixture_signal())
     return {
         'python': platform.python_version(), 'platform': platform.platform(),
         'pycatch22': version('pycatch22'),

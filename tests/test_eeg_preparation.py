@@ -5,14 +5,27 @@ import json
 
 import numpy as np
 import pandas as pd
+import pycatch22
 import pytest
 from vitaldb import dataset
 
 from data_preparation import eeg_extraction, eeg_study
 from data_preparation.artifact_metadata import file_sha256, metadata_path_for
+from data_preparation.catch24 import PYCATCH22_VERSION, descriptor_names, extract_catch24
 from data_preparation.inputs import MANDATORY_WAVEFORMS
 from data_preparation.step_04_intraop_prep import process_waveform_file
 from experimental.eeg.runtime import _require_isolation
+
+
+@pytest.mark.skipif(PYCATCH22_VERSION != "1.0.2", reason="Tests the upgraded extractor's masking API")
+def test_catch24_upgrade_preserves_undefined_values():
+    signal = np.sin(np.arange(64, dtype=float) * 0.1)
+    result = extract_catch24(signal)
+    dfa = next(feature["name"] for feature in pycatch22.feature_table() if feature["short_name"] == "dfa")
+    index = result["names"].index(dfa)
+    assert tuple(result["names"]) == descriptor_names()
+    assert np.isnan(result["values"][index])
+    assert np.isfinite(pycatch22.catch22_all(signal, catch24=True)["values"][index])
 
 
 def test_frozen_catalog_initializes_fresh_processed_directory(monkeypatch, tmp_path):

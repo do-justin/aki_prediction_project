@@ -10,13 +10,13 @@ import time
 
 import numpy as np
 import pandas as pd
-import pycatch22
 import requests
 from vitaldb import dataset
 
 from data_preparation.artifact_metadata import (
     ArtifactCompatibilityError, STEP_01_COHORT_ARTIFACT, file_sha256, metadata_path_for, read_versioned_csv,
 )
+from data_preparation.catch24 import descriptor_names
 from data_preparation.eeg import EEG_WAVEFORM, extract_eeg_case, protocol_fingerprint, raw_recording_path
 from data_preparation.eeg_study import EEG_PROFILE, QC_NAME, TRACK_CATALOG_NAME, track_catalog, write_csv, write_json
 from data_preparation.inputs import (
@@ -221,7 +221,7 @@ def _assemble(checkpoints: Path, caseids: list[int], fingerprints: dict[str, dic
         for channel in CHANNELS:
             for mode, row in payload["results"][channel].items():
                 (errors if "error" in row else features)[mode].append(row)
-    names = pycatch22.catch22_all(np.arange(64, dtype=float), catch24=True)["names"]
+    names = descriptor_names()
     qc = pd.DataFrame(audits) if audits else pd.DataFrame(columns=["caseid"])
     write_csv(PROCESSED_DIR / QC_NAME, qc)
     write_json(PROCESSED_DIR / "eeg_track_source_hashes.json", source_hashes)

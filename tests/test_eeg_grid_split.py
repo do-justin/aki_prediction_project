@@ -50,7 +50,8 @@ def test_eeg_exact_feature_grid_keeps_qc_and_outcomes_out(monkeypatch):
 
 
 def test_eeg_descriptor_remains_numeric_with_csv_string_values():
-    name = "BIS_EEG1_WAV_DN_Mean"
+    descriptor = next(name for name in utils.catch24_descriptor_names() if name.casefold() == "dn_mean")
+    name = f"BIS_EEG1_WAV_{descriptor}"
     data = pd.DataFrame({name: ["3", "invalid", "4"]})
     preprocessor = FoldPreprocessor().fit(data)
     assert preprocessor.numeric_columns_ == [name]

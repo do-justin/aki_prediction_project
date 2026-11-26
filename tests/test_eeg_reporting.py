@@ -1,4 +1,5 @@
 import json
+from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,6 +92,28 @@ def test_eeg_report_rejects_paths_outside_study(tmp_path):
     path.symlink_to(outside)
     with pytest.raises(ValueError, match="outside its study"):
         eeg_study._within(path, root)
+
+
+def test_eeg_descriptor_table_uses_frozen_extractor_definitions():
+    import pycatch22
+
+    legacy = eeg_study._descriptor_table("0.4.5")
+    assert legacy.attrs["pycatch22_version"] == "0.4.5"
+    assert "DN_Mean" in legacy["Catch24 descriptor"].tolist()
+
+    installed = version("pycatch22")
+    with pytest.raises(ValueError, match=r"require the frozen pycatch22 9\.9\.9"):
+        eeg_study._descriptor_table("9.9.9")
+    if installed == "0.4.5":
+        return
+
+    current = eeg_study._descriptor_table(installed)
+    definition = pycatch22.feature_table(catch24=True)
+    assert current["Catch24 descriptor"].tolist() == [row["name"] for row in definition]
+    assert current["hctsa reference call"].tolist() == [row["hctsa_call"] for row in definition]
+    assert "SP_Summaries_fft_wq_50" in current["Catch24 descriptor"].tolist()
+    sections = eeg_study._table_sections("Table S1", (pd.DataFrame(), pd.DataFrame(), current))
+    assert f"pycatch22 {installed}" in sections[-1]["notes"]
 
 
 def test_eeg_assembles_numbered_word_and_vector_pdf_books(tmp_path):

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Dict, Any, Tuple
 import numpy as np
 import pandas as pd
-import pycatch22
 from tqdm import tqdm
 import time
 
@@ -18,6 +17,7 @@ from data_preparation.artifact_metadata import (
     read_versioned_csv,
     metadata_path_for,
 )
+from data_preparation.catch24 import CATCH24_OPTIONS, extract_catch24
 from data_preparation.inputs import (
     COHORT_FILE, 
     CATCH_22_FILE,
@@ -52,13 +52,15 @@ def extraction_worker_count(task_count: int) -> int:
 def build_extraction_fingerprint(cohort_df: pd.DataFrame, mode: str) -> dict:
     """Identify signal inputs/settings before permitting checkpoint reuse."""
     roster = cohort_df[COHORT_REQUIRED_COLUMNS].sort_values("caseid").to_csv(index=False)
-    code_files = [Path(__file__), Path(__file__).with_name("waveform_processing.py")]
+    code_files = [Path(__file__), Path(__file__).with_name("waveform_processing.py"),
+                  Path(__file__).with_name("catch24.py")]
     return {
         "extraction_protocol_version": EXTRACTION_PROTOCOL_VERSION,
         "mode": mode,
         "cohort_roster_sha256": hashlib.sha256(roster.encode()).hexdigest(),
         "code_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in code_files},
         "pycatch22_version": version("pycatch22"),
+        "catch24_options": dict(CATCH24_OPTIONS),
         "vitaldb_version": version("vitaldb"),
         "scipy_version": version("scipy"),
         "resampling_policy": dict(RESAMPLING_POLICY),
@@ -209,7 +211,7 @@ def _process_case(case: Tuple[int, float, float, str]) -> Tuple[Dict[str, Any], 
                     results['full'] = {'caseid': caseid, 'waveform': waveform_key,
                                        'error': 'invalid_full_resampled_signal_empty_or_nonfinite'}
                 else:
-                    all_feature_results = pycatch22.catch22_all(seg_full, catch24=True)
+                    all_feature_results = extract_catch24(seg_full)
                     out = {n: v if np.isfinite(v) else np.nan
                            for n, v in zip(all_feature_results['names'], all_feature_results['values'])}
                     out['caseid'] = caseid
@@ -237,7 +239,7 @@ def _process_case(case: Tuple[int, float, float, str]) -> Tuple[Dict[str, Any], 
                     is_valid = (not np.isnan(win).all()) and (np.nanstd(win) >= 1e-6)
                     
                     if is_valid:
-                        all_feature_results = pycatch22.catch22_all(win, catch24=True)
+                        all_feature_results = extract_catch24(win)
                         feats_list.append(all_feature_results)
 
                 if not feats_list:

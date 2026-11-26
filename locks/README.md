@@ -1,7 +1,8 @@
 # CPU environment replay
 
-These locks record the Linux x86_64 / CPython 3.12.16 environment prepared on
-October 30, 2026, from commit `b75138f`, for Catch24, XGBoost, EBM and pytest.
+These locks record the Linux x86_64 / CPython 3.12.16 EEG upgrade environment.
+They retain the October 30, 2026 binary replay profile from commit `b75138f`
+with one wheel change to `pycatch22==1.0.2`.
 The original GPU environment is separate. Scientific equivalence checks are
 recorded in the [historical study log](../archive/docs/manuscript-reorientation-2026-11-04.md).
 
@@ -17,18 +18,18 @@ The captured wheels below support exact binary replay.
   so Conda's build-time `file://` paths are not treated as installable inputs.
 
 The wheelhouse is stored outside Git. On the current CPU VM it is at
-`/home/exouser/codex-handoffs/catch22-cpu-2026-10-30/wheelhouse`.
-Retain this directory with the locks: `pycatch22==0.4.5` was compiled locally;
-rebuilding its source can change the wheel hash. A clone containing only the
-locks cannot promise exact binary replay without these wheels. Conda packages
+`/home/exouser/codex-handoffs/catch22-eeg-pycatch102/wheelhouse`.
+Retain it with these locks for exact binary replay. The original 0.4.5
+wheelhouse stays at `/home/exouser/codex-handoffs/catch22-cpu-2026-10-30/wheelhouse`.
+Conda packages
 must also remain available upstream or in the Conda cache. The pip install is
 offline; Conda creation may contact conda-forge for uncached packages.
 
 From the repository root, select a new prefix and the retained wheelhouse:
 
 ```bash
-AKI_REBUILD_PREFIX="$HOME/miniforge3/envs/aki_prediction_project_rebuild_final" \
-AKI_WHEELHOUSE=/home/exouser/codex-handoffs/catch22-cpu-2026-10-30/wheelhouse \
+AKI_REBUILD_PREFIX="$HOME/miniforge3/envs/aki_prediction_project_eeg_pycatch102_rebuild" \
+AKI_WHEELHOUSE=/home/exouser/codex-handoffs/catch22-eeg-pycatch102/wheelhouse \
   bash scripts/cpu/rebuild-from-locks.sh
 ```
 
@@ -52,7 +53,7 @@ All project input/output roots are overridden inside the script, and storage
 enforcement is disabled only for those synthetic validation subprocesses.
 Neither script runs the smoke launcher or accesses original research storage.
 
-Native checks cover the synthetic Windows Python 3.9 Catch24 reference
+Native checks cover the version-specific synthetic Catch24 reference
 (`rtol=atol=1e-10`), CPU XGBoost and SHAP, the EBM factory and explanations,
 and Plotly, CSV, Markdown, Word and PDF exports. Scientific reproduction also
 requires provenance, cohort/split/schema and saved-result comparisons.

@@ -41,10 +41,13 @@ report['checks']['active_module_imports'] = 'passed'
 features = extract()
 assert len(features['names']) == len(set(features['names'])) == 24
 assert np.isfinite(features['values']).all()
-reference = json.loads((repo/'tests/fixtures/catch24-python39-windows-reference.json').read_text())
+reference_name = ('catch24-pycatch22-1.0.2-reference.json' if version('pycatch22') == '1.0.2'
+                  else 'catch24-python39-windows-reference.json')
+reference = json.loads((repo/'tests/fixtures'/reference_name).read_text())
+assert features['pycatch22'] == reference['pycatch22']
 assert features['names'] == reference['names'], 'Catch24 feature names/order changed'
 np.testing.assert_allclose(features['values'], reference['values'], rtol=1e-10, atol=1e-10)
-report['checks']['catch24_python39_windows_parity'] = {'status':'passed','rtol':1e-10,'atol':1e-10,'max_abs_delta':float(np.max(np.abs(np.array(features['values'])-reference['values']))),'scope':'one synthetic fixture, not clinical feature parity'}
+report['checks']['catch24_synthetic_replay'] = {'status':'passed','reference':reference_name,'rtol':1e-10,'atol':1e-10,'max_abs_delta':float(np.max(np.abs(np.array(features['values'])-reference['values']))),'scope':'one version-matched synthetic fixture'}
 (out/'catch24-python312.json').write_text(json.dumps(features,indent=2)+'\n')
 
 X, y = make_classification(n_samples=160,n_features=6,n_informative=4,n_redundant=0,random_state=42)

@@ -22,6 +22,17 @@ def test_catch22_feature_label_parses_waveform_and_aggregate():
     assert "Mean across windows" in label
 
 
+def test_catch24_v1_dimensional_descriptors_and_reducers_have_distinct_labels():
+    names = load_display_dictionary()
+
+    assert names.feature_label("BIS_EEG1_WAV_DN_mean", include_unit=True) == "EEG — Mean (µV)"
+    assert names.feature_label("BIS_EEG1_WAV_DN_Spread_std", include_unit=True) == "EEG — Standard deviation (µV)"
+    assert names.feature_label("BIS_EEG1_WAV_DN_mean_std", include_unit=True) == (
+        "EEG — Mean (Standard deviation across windows) (µV)"
+    )
+    assert names.feature_label("BIS_EEG1_WAV_SP_Summaries_fft_wq_50") == "EEG — Median spectral frequency"
+
+
 def test_feature_set_labels_merge_defaults():
     names = load_display_dictionary()
     merged = names.feature_set_labels({"custom_key": "Custom Feature Set"})

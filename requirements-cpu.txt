@@ -11,8 +11,8 @@ xgboost-cpu==2.1.4
 joblib==1.5.2
 shap==0.49.1
 vitaldb==1.0.0
-# Scientific extractor held at the observed local reference version.
-pycatch22==0.4.5
+# Versioned EEG extraction profile. The manuscript and prior EEG study use 0.4.5.
+pycatch22==1.0.2
 # EBM version is a new candidate, not a recovered original-VM version.
 interpret-core==0.7.8
 numba==0.61.2

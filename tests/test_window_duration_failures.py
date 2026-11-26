@@ -1,11 +1,17 @@
 """Finite-fallback audit uses only synthetic arrays and the pinned extractor."""
+from importlib.metadata import version
+
 import numpy as np
 import pycatch22
+import pytest
 
 from scripts.window_duration_failures import (
     EMBEDDING, FLUCTUATIONS, embedding_fallback_status, fluctuation_scale_count,
     verified_fallbacks,
 )
+
+
+pytestmark = pytest.mark.skipif(version("pycatch22") != "0.4.5", reason="Historical finite fallback audit requires 0.4.5")
 
 
 def test_regular_increment_series_verifies_embedding_zero_guard():

@@ -118,22 +118,19 @@ class DisplayDictionary:
         return aliases
 
     def _parse_catch22_feature(self, feature_name: str) -> Optional[tuple[str, str, Optional[str]]]:
-        aggregate = None
-        base = feature_name
-
-        for agg_key in self.catch22_aggregates:
-            suffix = f"_{agg_key}"
-            if feature_name.endswith(suffix):
-                aggregate = agg_key
-                base = feature_name[: -len(suffix)]
-                break
-
-        for stat_key in self.catch22_statistics:
-            suffix = f"_{stat_key}"
-            if base.endswith(suffix):
-                waveform_key = base[: -len(suffix)]
-                if waveform_key:
-                    return waveform_key, stat_key, aggregate
+        # Match the complete name before interpreting a window suffix. The
+        # native 1.x descriptors DN_mean and DN_Spread_std end in reducer names.
+        for aggregate in (None, *self.catch22_aggregates):
+            base = feature_name
+            if aggregate is not None:
+                suffix = f"_{aggregate}"
+                if not base.endswith(suffix):
+                    continue
+                base = base.removesuffix(suffix)
+            for stat_key in self.catch22_statistics:
+                suffix = f"_{stat_key}"
+                if base.endswith(suffix) and len(base) > len(suffix):
+                    return base.removesuffix(suffix), stat_key, aggregate
         return None
 
     def _lookup_waveform(self, waveform_key: str) -> Optional[DisplayEntry]:

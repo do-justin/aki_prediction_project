@@ -1,6 +1,6 @@
 # Primary Catch22 CPU environment, Linux x86_64; run from the repository root.
 # Exact binary replay: scripts/cpu/rebuild-from-locks.sh (see locks/README.md).
-name: aki_prediction_project
+name: aki_prediction_project_eeg_pycatch102
 channels:
   - conda-forge
   - nodefaults

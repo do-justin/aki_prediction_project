@@ -241,12 +241,11 @@ def test_window_stride_and_undefined_descriptor_propagation(monkeypatch, tmp_pat
     observed = []
     data = iter(([1., 2.], [1., np.inf], [3., 4.], [5., 6.]))
 
-    def catch24(values, *, catch24):
-        assert catch24
+    def catch24(values):
         observed.append(len(values))
         return {"names": ["known", "undefined"], "values": next(data)}
 
-    monkeypatch.setattr(eeg.pycatch22, "catch22_all", catch24)
+    monkeypatch.setattr(eeg, "extract_catch24", catch24)
     raw = _signal(20)
     _recording(monkeypatch, tmp_path, {
         eeg.EEG_WAVEFORM: _waveform(raw), eeg.SQI_TRACK: _sqi(range(20), [90] * 20),
@@ -268,7 +267,8 @@ def test_one_qualifying_window_preserves_nan_sample_sd_and_masks(monkeypatch, tm
     })
     records, _, qc = eeg.extract_eeg_case(1, 0, 10, tmp_path)
     assert qc["total_windows"] == qc["retained_windows"] == 1
-    assert np.isnan(records["windowed"]["DN_Mean_std"])
+    mean_sd = next(value for name, value in records["windowed"].items() if name.casefold() == "dn_mean_std")
+    assert np.isnan(mean_sd)
     mask_bytes = zlib.decompress(base64.b64decode(qc["masks"]["data"]["source_nonfinite"]))
     mask = np.unpackbits(np.frombuffer(mask_bytes, dtype=np.uint8), bitorder="little")
     assert np.flatnonzero(mask[:qc["expected_samples"]]).tolist() == [200]
@@ -303,4 +303,5 @@ def test_window_guard_excludes_degenerate_windows_without_excluding_descriptor_n
     assert qc["total_windows"] == 2
     assert qc["retained_windows"] == qc["failed_windows"] == 1
     assert qc["branch_status"]["windowed"] == "success"
-    assert np.isnan(records["windowed"]["DN_Mean_std"])
+    mean_sd = next(value for name, value in records["windowed"].items() if name.casefold() == "dn_mean_std")
+    assert np.isnan(mean_sd)

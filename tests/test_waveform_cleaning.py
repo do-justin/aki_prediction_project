@@ -15,8 +15,8 @@ def synthetic_extraction(monkeypatch):
     monkeypatch.setitem(extraction.WAVEFORM_SPECS, "synthetic", spec)
     monkeypatch.setattr(extraction, "GENERATE_FULL_FEATURES", True)
     monkeypatch.setattr(extraction, "GENERATE_WINDOWED_FEATURES", False)
-    monkeypatch.setattr(extraction.pycatch22, "catch22_all",
-                        lambda values, catch24: {"names": ["feature"], "values": [float(np.mean(values))]})
+    monkeypatch.setattr(extraction, "extract_catch24",
+                        lambda values: {"names": ["feature"], "values": [float(np.mean(values))]})
     return spec
 
 
@@ -80,7 +80,7 @@ def test_full_feature_resampling_is_also_validated(monkeypatch, synthetic_extrac
 
 def test_full_descriptors_canonicalize_nonfinite_values_without_dropping_channel(monkeypatch, synthetic_extraction):
     _supply_wave(monkeypatch, np.sin(np.arange(1000) / 10))
-    monkeypatch.setattr(extraction.pycatch22, "catch22_all", lambda *args, **kwargs:
+    monkeypatch.setattr(extraction, "extract_catch24", lambda *args:
                         {"names": ["finite", "nan", "positive_inf", "negative_inf"],
                          "values": [2., np.nan, np.inf, -np.inf]})
     result, _ = extraction._process_case((1, 0, 10, "synthetic"))
@@ -95,7 +95,7 @@ def test_window_aggregation_uses_float64_and_preserves_undefined_propagation(mon
     monkeypatch.setattr(extraction, "WIN_SEC", 10)
     monkeypatch.setattr(extraction, "SLIDE_SEC", 5)
     features = iter(([1., np.inf, 1e30], [3., 5., 2e30]))
-    monkeypatch.setattr(extraction.pycatch22, "catch22_all", lambda *args, **kwargs:
+    monkeypatch.setattr(extraction, "extract_catch24", lambda *args:
                         {"names": ["finite", "undefined", "large"], "values": next(features)})
     result, _ = extraction._process_case((1, 0, 15, "synthetic"))
     row = result["windowed"]
@@ -199,12 +199,12 @@ def test_actual_filter_resampling_and_catch24_paths_stay_operation_local(monkeyp
     wave = 3 + np.sin(2 * np.pi * times) + .2 * np.sin(2 * np.pi * 17 * times)
     monkeypatch.setattr(extraction, "GENERATE_FULL_FEATURES", True)
     monkeypatch.setattr(extraction, "GENERATE_WINDOWED_FEATURES", True)
-    original_catch24 = extraction.pycatch22.catch22_all
+    original_catch24 = extraction.extract_catch24
     sample_counts = []
-    def track_samples(values, **kwargs):
+    def track_samples(values):
         sample_counts.append(len(values))
-        return original_catch24(values, **kwargs)
-    monkeypatch.setattr(extraction.pycatch22, "catch22_all", track_samples)
+        return original_catch24(values)
+    monkeypatch.setattr(extraction, "extract_catch24", track_samples)
     monkeypatch.setattr(extraction, "load_and_validate_case", lambda *args: (wave.copy(), channel, None))
     original, _ = extraction._process_case((1, 1, 31, channel))
     assert sample_counts[0] == 30 * 10  # full-operation features retain 10 Hz

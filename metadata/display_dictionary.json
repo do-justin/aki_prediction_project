@@ -164,7 +164,7 @@
       "label": "Frontal EEG",
       "short_label": "EEG",
       "unit": "µV",
-      "dimensional_statistics": ["DN_Mean", "DN_Spread_Std"]
+      "dimensional_statistics": ["DN_Mean", "DN_Spread_Std", "DN_mean", "DN_Spread_std"]
     },
     "SNUADC/PLETH": {
       "label": "Plethysmography",
@@ -263,6 +263,36 @@
       "label": "Mean"
     },
     "DN_Spread_Std": {
+      "label": "Standard deviation"
+    },
+    "CO_FirstCrossing_acf_1e_pointOfCrossing": {
+      "label": "First 1/e crossing of autocorrelation"
+    },
+    "SP_Summaries_fft_area_5_1": {
+      "label": "Low-frequency spectral power"
+    },
+    "SP_Summaries_fft_wq_50": {
+      "label": "Median spectral frequency"
+    },
+    "FC_LocalSimple_mean3_stde": {
+      "label": "Three-sample mean forecast error"
+    },
+    "FC_LocalSimple_mean1_taurat": {
+      "label": "Residual-to-original autocorrelation timescale ratio"
+    },
+    "MD_pNN_pnn40": {
+      "label": "pNN40-style variability"
+    },
+    "CO_HistogramAMI_even_5bin_ami2": {
+      "label": "Lag-two auto mutual information (5 bins)"
+    },
+    "SB_TransitionMatrix_quantile_3_ac_sumdiagcov": {
+      "label": "Three-state transition covariance trace"
+    },
+    "DN_mean": {
+      "label": "Mean"
+    },
+    "DN_Spread_std": {
       "label": "Standard deviation"
     }
   },

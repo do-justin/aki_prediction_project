@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+from importlib.metadata import version
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -308,7 +309,30 @@ def _performance(metrics):
     return output, source
 
 
-def _predictor_tables(study):
+def _descriptor_table(extractor_version: str) -> pd.DataFrame:
+    if extractor_version == "0.4.5":
+        descriptors = pd.DataFrame(DESCRIPTORS.items(), columns=["Catch24 descriptor", "Description"])
+    else:
+        import pycatch22
+
+        installed = version("pycatch22")
+        if installed != extractor_version or not hasattr(pycatch22, "feature_table"):
+            raise ValueError(
+                f"EEG descriptor definitions require the frozen pycatch22 {extractor_version} build. "
+                f"Installed version is {installed}."
+            )
+        table = pycatch22.feature_table(catch24=True)
+        descriptors = pd.DataFrame(
+            ((row["name"], row["hctsa_call"]) for row in table),
+            columns=["Catch24 descriptor", "hctsa reference call"],
+        )
+    if len(descriptors) != 24 or not descriptors["Catch24 descriptor"].is_unique:
+        raise ValueError(f"Invalid Catch24 definitions for pycatch22 {extractor_version}.")
+    descriptors.attrs["pycatch22_version"] = extractor_version
+    return descriptors
+
+
+def _predictor_tables(study, *, extractor_version: str):
     ps = study["predictions"][("ebm", "any_aki", "non_windowed", "preop_only")]
     import joblib
     fold_dir = ps.path.parent.parent / "artifacts/folds/repeat_00/outer_00"
@@ -324,8 +348,7 @@ def _predictor_tables(study):
     waveform = pd.DataFrame(channels, columns=["Prefix", "Waveform", "Source", "Native rate", "Filter"])
     waveform["Whole-operation rate"] = ["10 Hz"] * 4 + ["128 Hz"]
     waveform["Windowed rate"] = ["100 Hz", "100 Hz", "62.5 Hz", "62.5 Hz", "128 Hz"]
-    descriptors = pd.DataFrame(DESCRIPTORS.items(), columns=["Catch24 descriptor", "Description"])
-    return (pd.DataFrame(clinical), waveform, descriptors)
+    return (pd.DataFrame(clinical), waveform, _descriptor_table(extractor_version))
 
 
 def _axes(rows, cols=3, *, height=2.15):
@@ -549,6 +572,8 @@ def _table_sections(label, frames):
         "Each descriptor is summarized by mean, sample SD, minimum and maximum.",
         "Table S2": "The cohorts overlap. Positive patients had at least one positive operation.",
     }
+    if label == "Table S1" and (extractor_version := frames[-1].attrs.get("pycatch22_version")):
+        notes[label] = f"Waveform descriptors use pycatch22 {extractor_version}. {notes[label]}"
     return [{"heading": heading, "dataframe": frame, "notes": notes[label] if i == len(frames) - 1 else None}
             for i, (heading, frame) in enumerate(zip(headings, frames, strict=True))]
 
@@ -688,7 +713,7 @@ def build_report(artifact_root: Path, processed: Path) -> Path:
     protocol = json.loads(pilot.read_text())["protocol"]
     table_1, table_s2 = _descriptives(studies, processed, attrition)
     table_2, performance = _performance(shared["metrics"])
-    table_s1 = _predictor_tables(shared)
+    table_s1 = _predictor_tables(shared, extractor_version=protocol["versions"]["pycatch22"])
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".building-", dir=output) as work, style.style_context():
         out = Path(work)

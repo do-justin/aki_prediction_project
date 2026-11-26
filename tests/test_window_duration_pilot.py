@@ -1,4 +1,6 @@
 """Window audit preserves production grids and undefined-value propagation."""
+from importlib.metadata import version
+
 import numpy as np
 import pytest
 
@@ -13,6 +15,7 @@ def test_grid_rounding_flat_windows_and_nan_propagation(monkeypatch):
             values[4] = np.nan
         return {"names": pilot.FEATURE_NAMES, "values": values}
     monkeypatch.setattr(pilot.pycatch22, "catch22_all", features)
+    monkeypatch.setattr(pilot, "verified_fallbacks", lambda *args: np.zeros(24, dtype=bool))
     signal = np.arange(1300, dtype=float)
     result = pilot.extract_grid(signal, 62.5, 10)
     assert result["candidate_starts"].tolist() == [0, 312, 624]
@@ -39,6 +42,7 @@ def test_grid_rejects_unprocessed_nonfinite_signal():
         pilot.extract_grid(np.array([1., np.inf]), 100, 10)
 
 
+@pytest.mark.skipif(version("pycatch22") != "0.4.5", reason="Historical window audit requires 0.4.5")
 def test_channel_preserves_raw_features_and_masks_verified_fallbacks(tmp_path):
     # A filtered ramp triggers the pinned extractor's degenerate embedding
     # branch. Use the real extractor and detector through channel checkpointing.

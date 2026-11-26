@@ -12,9 +12,10 @@ from typing import Any
 import zlib
 
 import numpy as np
-import pycatch22
 import scipy.signal
 import vitaldb
+
+from data_preparation.catch24 import CATCH24_OPTIONS, extract_catch24
 
 
 EEG_WAVEFORM = "BIS/EEG1_WAV"
@@ -76,7 +77,8 @@ def protocol_fingerprint() -> dict[str, Any]:
             "padtype": "odd", "padlen": None,
         },
         "minimum_sd_uv": MIN_SD_UV,
-        "features": "pycatch22.catch22_all(catch24=True)",
+        "features": "pycatch22.catch22_all",
+        "feature_options": dict(CATCH24_OPTIONS),
         "window_samples": WINDOW_SAMPLES,
         "stride_samples": STRIDE_SAMPLES,
         "window_aggregates": list(AGGREGATES),
@@ -398,7 +400,7 @@ def load_clean_eeg(caseid: int, opstart: float, opend: float, raw_dir: str | Pat
 
 
 def _features(signal: np.ndarray) -> tuple[list[str], np.ndarray]:
-    result = pycatch22.catch22_all(signal, catch24=True)
+    result = extract_catch24(signal)
     values = np.asarray(result["values"], dtype=float)
     values[~np.isfinite(values)] = np.nan
     return result["names"], values
