@@ -32,6 +32,8 @@ python -B -m run_catch22 experiments --study-profile eeg --report-only
 
 After the pilot and candidate commit, use `bash experimental/eeg/run_study.sh` in a dedicated tmux session to execute or resume the remaining stages. The supervisor records its current stage and exit status in `control/eeg-supervisor.status`. The launcher logs to `logs/experiment_log.txt`. A preflight status of `blocked` records a preparation, source, or operational failure. A status of `infeasible` records a scientifically unsupported split. Resumption uses the same code, artifact root, and protocol.
 
+Extraction defaults to one worker per available CPU, bounded by affinity, CPU quota, and remaining operations. `AKI_EXTRACTION_WORKERS` can lower that count. `AKI_EEG_DOWNLOAD_WORKERS` independently limits concurrent VitalDB downloads and defaults to four.
+
 `results/catch22/eeg_report/` contains the EEG Word and PDF books, source tables, figure assets, paired comparisons, curve data, and numerical explanation exports. PDF and Word composition use the same figures, tables, and ordering. PDF proofs of the Word files require a DOCX renderer for pagination review.
 
 ## Fixed study settings

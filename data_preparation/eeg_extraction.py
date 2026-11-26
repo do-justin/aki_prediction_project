@@ -275,13 +275,16 @@ def main() -> None:
             pending.append((caseid, float(start), float(end), release[name]))
     # Start the largest recordings early to keep them from becoming a serial tail.
     pending.sort(key=lambda task: (-(task[2] - task[1]), task[0]))
-    workers = min(available_cpu_count(), int(os.getenv("AKI_EXTRACTION_WORKERS", "4")))
+    available_cpus = available_cpu_count()
+    workers = min(available_cpus, int(os.getenv("AKI_EXTRACTION_WORKERS", str(available_cpus))))
     timeout = int(os.getenv("AKI_EEG_EXTRACTION_IDLE_TIMEOUT", "14400"))
     downloads = int(os.getenv("AKI_EEG_DOWNLOAD_WORKERS", "4"))
     if min(workers, timeout, downloads) < 1:
         raise ValueError("EEG extraction worker count, download limit, and idle timeout must be positive.")
     if pending:
-        print(f"Extracting {len(pending)} remaining EEG-study operations with {workers} workers", flush=True)
+        workers = min(workers, len(pending))
+        print(f"Extracting {len(pending)} remaining EEG-study operations with {workers} workers "
+              f"and up to {downloads} concurrent VitalDB downloads", flush=True)
         download_slots = BoundedSemaphore(downloads)
         with Pool(processes=workers, initializer=_init_worker, initargs=(PROCESSED_DIR, download_slots)) as pool:
             results = pool.imap_unordered(_extract_operation, pending, chunksize=1)

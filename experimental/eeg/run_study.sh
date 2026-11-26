@@ -10,7 +10,6 @@ export AKI_ARTIFACT_ROOT="${AKI_ARTIFACT_ROOT:-/media/volume/catch22/data/aki_pr
 export RAW_DIR="${RAW_DIR:-/media/volume/catch22/projects/aki_prediction_project/data/raw}"
 export PYTHONDONTWRITEBYTECODE=1
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
-export AKI_EXTRACTION_WORKERS="${AKI_EXTRACTION_WORKERS:-24}"
 export AKI_EEG_DOWNLOAD_WORKERS="${AKI_EEG_DOWNLOAD_WORKERS:-4}"
 
 if [[ -n "$(git status --porcelain)" ]]; then
