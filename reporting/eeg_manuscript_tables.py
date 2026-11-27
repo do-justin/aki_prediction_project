@@ -18,6 +18,7 @@ from reporting.manuscript_workspace.revision_tables import (
     CATEGORIES, CHANNEL_SPECS, DESCRIPTORS, LABS, clinical_predictor_table,
 )
 from reporting.preop_descriptives import _ecg_display, _restrict_to_roster
+from data_preparation.eeg import AMPLITUDE_PROTOCOL, PROTOCOL
 
 
 COHORT_SOURCES = ("aki_pleth_ecg_co2_awp.csv", "aki_preop_processed.csv")
@@ -204,7 +205,7 @@ def descriptor_table(extractor_version):
     return table
 
 
-def predictor_tables(study, *, extractor_version, raw: Path):
+def predictor_tables(study, *, extractor_version, raw: Path, eeg_protocol=PROTOCOL):
     baseline = study["predictions"][("ebm", "any_aki", "non_windowed", "preop_only")]
     path = baseline.path.parent.parent / "artifacts/folds/repeat_00/outer_00/preprocessor.pkl"
     if not path.resolve().is_relative_to(study["root"].resolve()):
@@ -218,6 +219,7 @@ def predictor_tables(study, *, extractor_version, raw: Path):
     waveforms = [spec for spec in CHANNEL_SPECS.values()]
     waveforms.append(("Frontal EEG (EEG)", "BIS/EEG1_WAV, loading fallback BIS/EEG2_WAV", "128 Hz", "0.5–50 Hz band-pass"))
     channels = pd.DataFrame(waveforms, columns=["Waveform", "VitalDB track", "Original sampling rate", "Filter"])
+    channels.attrs["eeg_protocol"] = eeg_protocol
     channels["Whole-operation rate"] = ["10 Hz"] * 4 + ["128 Hz"]
     channels["Windowed rate"] = ["100 Hz", "100 Hz", "62.5 Hz", "62.5 Hz", "128 Hz"]
     descriptors = descriptor_table(extractor_version)
@@ -287,8 +289,13 @@ def _predictors(doc, clinical, channels, descriptors):
                 "nonfinite samples and interpolate qualifying gaps before zero-phase Butterworth filtering "
                 "(design N = 4) and polyphase antialiasing resampling."],
         merge=((0, 3),), compact=True)
-    row(table, ["For EEG, mask missing samples, SQI below 50 or unavailable within the preceding second, and amplitudes outside ±100 µV. "
-                "The combined mask may cover at most 5% of the grid. Interpolate with nearest endpoint fill "
+    if channels.attrs.get("eeg_protocol") == AMPLITUDE_PROTOCOL:
+        mask_note = ("For EEG, flag missing or nonfinite samples and amplitudes outside ±100 µV. BIS SQI is descriptive metadata. "
+                     "This sample-level mask adapts amplitude limits used for segment or epoch rejection.")
+    else:
+        mask_note = ("For EEG, mask missing samples, SQI below 50 or unavailable within the preceding second, "
+                     "and amplitudes outside ±100 µV.")
+    row(table, [f"{mask_note} The combined mask may cover at most 5% of the grid. Interpolate with nearest endpoint fill "
                 "before zero-phase Butterworth filtering (design N = 4)."], merge=((0, 3),), compact=True)
     row(table, ["Feature construction"], band=True, merge=((0, 3),), compact=True)
     row(table, ("", "Whole-operation", "Windowed"), band=True, merge=((2, 3),), compact=True)

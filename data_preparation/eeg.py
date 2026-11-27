@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from importlib.metadata import version
+import os
 from pathlib import Path
 from struct import error as StructError
 from time import perf_counter
@@ -23,6 +24,7 @@ EEG_FALLBACK = "BIS/EEG2_WAV"
 SQI_TRACK = "BIS/SQI"
 EEG_TRACKS = (EEG_WAVEFORM, EEG_FALLBACK, SQI_TRACK)
 PROTOCOL = "eeg-qc-v1"
+AMPLITUDE_PROTOCOL = "eeg-qc-amplitude-v1"
 NATIVE_RATE = 128
 WINDOW_SAMPLES = 10 * NATIVE_RATE
 STRIDE_SAMPLES = 5 * NATIVE_RATE
@@ -49,9 +51,17 @@ class EEGCleanResult:
     qc: dict[str, Any]
 
 
+def qc_protocol() -> str:
+    protocol = os.getenv("AKI_EEG_QC_PROTOCOL", PROTOCOL)
+    if protocol not in (PROTOCOL, AMPLITUDE_PROTOCOL):
+        raise ValueError(f"Unsupported AKI_EEG_QC_PROTOCOL: {protocol!r}")
+    return protocol
+
+
 def protocol_fingerprint() -> dict[str, Any]:
-    return {
-        "protocol": PROTOCOL,
+    protocol = qc_protocol()
+    fingerprint = {
+        "protocol": protocol,
         "reader": "vitaldb.VitalFile local native packet records",
         "versions": {name: version(name) for name in ("vitaldb", "numpy", "scipy", "pycatch22")},
         "channels": list(EEG_TRACKS),
@@ -85,6 +95,14 @@ def protocol_fingerprint() -> dict[str, Any]:
         "descriptor_missingness": "nonfinite_to_nan_propagate_across_included_windows",
         "window_sd_ddof": 1,
     }
+    if protocol == AMPLITUDE_PROTOCOL:
+        fingerprint.update(
+            unusable_policy=("union_of_missing_nonfinite_and_raw_amplitude_high_over_entire_"
+                             "expected_grid_max_inclusive_5_percent"),
+            sqi_role="descriptive_metadata_only",
+            sqi_decode_policy="retry_waveform_without_unreadable_sqi",
+        )
+    return fingerprint
 
 
 def raw_recording_path(raw_dir: str | Path, caseid: int) -> Path:
@@ -107,7 +125,7 @@ def _read_recording(path: Path, names: tuple[str, ...]):
     return recording
 
 
-def _select_source(path: Path):
+def _select_source(path: Path, *, sqi_descriptive_only: bool = False):
     """Read both tracks once in the normal case, then support track-local decode recovery."""
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -118,14 +136,21 @@ def _select_source(path: Path):
         track_status = {EEG_WAVEFORM: "unreadable", EEG_FALLBACK: "not_checked"}
         read_errors = []
         for name in (EEG_WAVEFORM, EEG_FALLBACK):
-            try:
-                recording = _read_recording(path, (name, SQI_TRACK))
-            except decode_errors as exc:
+            tracks = ((name, SQI_TRACK), (name,)) if sqi_descriptive_only else ((name, SQI_TRACK),)
+            for names in tracks:
+                try:
+                    recording = _read_recording(path, names)
+                    break
+                except decode_errors as exc:
+                    read_error = exc
+            else:
                 track_status[name] = "unreadable"
-                read_errors.append(exc)
+                read_errors.append(read_error)
                 continue
             track_status[name] = _track_status(recording, name)
             if track_status[name] == "present":
+                if SQI_TRACK not in names:
+                    track_status[SQI_TRACK] = "unreadable"
                 return recording, name, track_status
         if read_errors:
             raise OSError(f"Unable to decode an EEG track from {path.name}") from read_errors[-1]
@@ -278,13 +303,15 @@ def _gap_audit(unusable: np.ndarray) -> dict[str, int | float]:
     }
 
 
-def _mask_audit(raw: np.ndarray, observed_times: np.ndarray, sqi: np.ndarray):
+def _mask_audit(raw: np.ndarray, observed_times: np.ndarray, sqi: np.ndarray, *, include_sqi: bool = True):
     source_missing = ~np.isfinite(observed_times)
     source_nonfinite = ~source_missing & ~np.isfinite(raw)
     sqi_unknown = ~np.isfinite(sqi)
     low_sqi = sqi < SQI_MINIMUM
     high_amplitude = np.isfinite(raw) & (np.abs(raw) > MAX_AMPLITUDE_UV)
-    unusable = source_missing | source_nonfinite | sqi_unknown | low_sqi | high_amplitude
+    unusable = source_missing | source_nonfinite | high_amplitude
+    if include_sqi:
+        unusable |= sqi_unknown | low_sqi
     masks = {
         "source_missing": source_missing,
         "source_nonfinite": source_nonfinite,
@@ -339,9 +366,11 @@ def _clean_signal(raw: np.ndarray, unusable: np.ndarray, qc: dict) -> tuple[np.n
 
 def load_clean_eeg(caseid: int, opstart: float, opend: float, raw_dir: str | Path) -> EEGCleanResult:
     """Load the chosen raw EEG and clean the single common operative signal."""
+    protocol = qc_protocol()
+    sqi_descriptive_only = protocol == AMPLITUDE_PROTOCOL
     qc: dict[str, Any] = {
         "caseid": int(caseid),
-        "protocol": PROTOCOL,
+        "protocol": protocol,
         "selected_source": None,
         "fallback_reason": None,
         "expected_samples": 0,
@@ -358,7 +387,7 @@ def load_clean_eeg(caseid: int, opstart: float, opend: float, raw_dir: str | Pat
         return EEGCleanResult(empty, empty, empty, empty, None, {}, qc)
 
     recording_path = raw_recording_path(raw_dir, caseid)
-    recording, selected, track_status = _select_source(recording_path)
+    recording, selected, track_status = _select_source(recording_path, sqi_descriptive_only=sqi_descriptive_only)
     qc.update(
         selected_source=selected, track_status=track_status,
         fallback_reason=None if selected == EEG_WAVEFORM else track_status[EEG_WAVEFORM],
@@ -390,7 +419,9 @@ def load_clean_eeg(caseid: int, opstart: float, opend: float, raw_dir: str | Pat
     sqi, sqi_audit = _align_sqi(
         sqi_track, recording.dtstart, np.where(np.isfinite(observed_times), observed_times, times)
     )
-    masks, mask_audit = _mask_audit(raw, observed_times, sqi)
+    if track_status.get(SQI_TRACK) == "unreadable":
+        sqi_audit["sqi_status"] = "unreadable"
+    masks, mask_audit = _mask_audit(raw, observed_times, sqi, include_sqi=not sqi_descriptive_only)
     qc.update(timing_audit)
     qc.update(sqi_audit)
     qc.update(mask_audit)

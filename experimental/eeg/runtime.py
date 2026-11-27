@@ -13,6 +13,7 @@ BASELINE_REPO = Path("/home/exouser/projects/aki_prediction_project")
 PRESERVATION_ROOT = Path("/home/exouser/codex-handoffs/joms-manuscript-pre-eeg-2026-11-25")
 ORIGINAL_EEG_ROOT = DEFAULT_ARTIFACT_ROOT / "studies/eeg-feasibility-v1"
 DEFAULT_STUDY_ROOT = DEFAULT_ARTIFACT_ROOT / "studies/eeg-feasibility-pycatch22-1.0.2-v1"
+AMPLITUDE_STUDY_ROOT = DEFAULT_ARTIFACT_ROOT / "studies/eeg-feasibility-pycatch22-1.0.2-amplitude-v1"
 DEFAULT_RAW_ROOT = DEFAULT_MEDIA_ROOT / "projects/aki_prediction_project/data/raw"
 LAYOUT_OVERRIDES = {
     "DATA_DIR": "data", "PROCESSED_DIR": "data/processed",
@@ -22,8 +23,14 @@ LAYOUT_OVERRIDES = {
 
 
 def _require_isolation(root: Path, paths: dict[str, Path], raw: Path) -> None:
+    from data_preparation.eeg import AMPLITUDE_PROTOCOL, qc_protocol
+
+    amplitude = qc_protocol() == AMPLITUDE_PROTOCOL
     protected = [raw, DEFAULT_RAW_ROOT, BASELINE_REPO, PRESERVATION_ROOT, ORIGINAL_EEG_ROOT,
+                 DEFAULT_STUDY_ROOT if amplitude else AMPLITUDE_STUDY_ROOT,
                  *DEFAULT_STUDY_ROOT.parent.glob("manuscript-*")]
+    if amplitude and (reference := os.getenv("AKI_EEG_W4_REFERENCE")):
+        protected.append(Path(reference).expanduser().resolve())
     for name, path in {"study_root": root, **paths}.items():
         if not path_is_within(path, root):
             raise ValueError(f"EEG writable path {name}={path} must resolve inside {root}.")
@@ -41,10 +48,12 @@ def _require_isolation(root: Path, paths: dict[str, Path], raw: Path) -> None:
 def configure_environment(*, dry_run: bool = False, root_override: Path | None = None) -> Path:
     """Establish a single safe write boundary before importing profile consumers."""
     from importlib.metadata import version
+    from data_preparation.eeg import AMPLITUDE_PROTOCOL, qc_protocol
 
     if version("pycatch22") != "1.0.2":
         raise ValueError("This EEG upgrade worktree requires the pinned pycatch22 1.0.2 candidate environment.")
-    root = (root_override or Path(os.getenv("AKI_ARTIFACT_ROOT", DEFAULT_STUDY_ROOT))).expanduser()
+    default = AMPLITUDE_STUDY_ROOT if qc_protocol() == AMPLITUDE_PROTOCOL else DEFAULT_STUDY_ROOT
+    root = (root_override or Path(os.getenv("AKI_ARTIFACT_ROOT", default))).expanduser()
     if root.is_symlink():
         raise ValueError(f"EEG study root may not be a symbolic link: {root}")
     root = root.resolve()
@@ -220,6 +229,27 @@ def run_pilot(args) -> int:
     return 0
 
 
+def require_amplitude_cohort_confirmation(root: Path) -> None:
+    from data_preparation.eeg import AMPLITUDE_PROTOCOL, qc_protocol
+
+    if qc_protocol() != AMPLITUDE_PROTOCOL:
+        return
+    from data_preparation.artifact_metadata import file_sha256
+    from experimental.eeg.verify_amplitude_cohort import CONFIRMATION_NAME
+
+    confirmation = root / "control" / CONFIRMATION_NAME
+    if not confirmation.is_file():
+        raise ValueError("Confirm the amplitude EEG cohort against the saved-mask replay before fitting.")
+    expected = json.loads(confirmation.read_text())
+    processed = Path(os.environ["PROCESSED_DIR"])
+    sources = {"split_preflight_sha256": root / "control/eeg_split_preflight.json",
+               "case_audit_sha256": processed / "eeg_operation_attrition.csv",
+               "fingerprint_sha256": processed / "eeg_extraction_checkpoints/fingerprint.json"}
+    if ((expected.get("status"), expected.get("protocol")) != ("confirmed", AMPLITUDE_PROTOCOL)
+            or any(not path.is_file() or file_sha256(path) != expected.get(key) for key, path in sources.items())):
+        raise ValueError(f"Amplitude EEG cohort confirmation is stale or incomplete: {confirmation}")
+
+
 def prepare_diagnostic_root(root: Path) -> Path:
     from data_preparation.artifact_metadata import file_sha256, metadata_path_for
     from data_preparation.eeg_study import TRACK_CATALOG_NAME
@@ -230,6 +260,7 @@ def prepare_diagnostic_root(root: Path) -> Path:
     preflight = json.loads(gate.read_text())
     if preflight.get("status") != "validated":
         raise ValueError("EEG diagnostic fitting is held by the definitive split preflight.")
+    require_amplitude_cohort_confirmation(root)
     source = Path(os.environ["PROCESSED_DIR"])
     basenames = {
         "non_windowed": "aki_features_master_wide.csv",

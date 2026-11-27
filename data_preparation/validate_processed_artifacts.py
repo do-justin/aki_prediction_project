@@ -16,7 +16,7 @@ from data_preparation.artifact_metadata import (
     file_sha256,
 )
 from data_preparation.cohort_scopes import COHORT_SCOPES, LEGACY_STORED_SCOPES, build_cohort_manifest
-from data_preparation.eeg_study import EEG_PROFILE, EEG_SCOPE_IDENTITIES, TRACK_CATALOG_NAME, eeg_profile
+from data_preparation.eeg_study import EEG_PROFILE, TRACK_CATALOG_NAME, eeg_profile, eeg_scope_identities
 from data_preparation.inputs import (
     COHORT_FILE,
     PREOP_PROCESSED_FILE,
@@ -161,10 +161,11 @@ def validate_scope_manifests(frame, manifests, branch, path, *, eeg=False):
     sidecars. If present, it must match just as strictly as original entries.
     Callers may persist the returned overlay under their new study root.
     """
-    scopes = EEG_SCOPE_IDENTITIES if eeg else COHORT_SCOPES
+    identities = eeg_scope_identities() if eeg else {}
+    scopes = identities or COHORT_SCOPES
     current = {scope: build_cohort_manifest(frame, scope, branch) for scope in scopes}
-    for scope in EEG_SCOPE_IDENTITIES if eeg else ():
-        current[scope]["cohort_manifest_identity"] = EEG_SCOPE_IDENTITIES[scope]
+    for scope, identity in identities.items():
+        current[scope]["cohort_manifest_identity"] = identity
     for scope in scopes:
         if scope in LEGACY_STORED_SCOPES or scope in manifests:
             if manifests.get(scope) != current[scope]:

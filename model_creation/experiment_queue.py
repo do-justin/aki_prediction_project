@@ -239,15 +239,15 @@ def _load_or_prepare_eeg_preflight(args, context: dict, control: Path, identity:
 
 def execute(args) -> int:
     import run_catch22 as launcher
+    from data_preparation.eeg_study import eeg_scope_identities
     from model_creation.run_inventory import (
         configuration_key, import_completed_inventory, validate_completed_reference_request,
         validate_reviewed_extension,
     )
     from model_creation.split_plan import prepare_split_plan
     from model_creation.validation import logistic_regression_weighting_policy
-    from model_creation.utils import EEG_SCOPE_IDS
-
     eeg = getattr(args, "study_profile", None) == "eeg"
+    eeg_scope_ids = eeg_scope_identities() if eeg else {}
     preflight_only = getattr(args, "preflight_only", False)
     eeg_definitive = eeg and not (args.diagnostic or args.smoke)
     if preflight_only and (not eeg_definitive or args.report_only):
@@ -262,11 +262,11 @@ def execute(args) -> int:
                                  calibration_folds=min(args.calibration_folds, 2), max_workers=1,
                                  threads_per_model=min(args.threads_per_model or 2, 2), blas_threads=1)
     scopes = args.cohort_scopes or ([args.cohort_scope] if args.cohort_scope else
-                                    list(EEG_SCOPE_IDS) if eeg else ["main_shared"])
+                                    list(eeg_scope_ids) if eeg else ["main_shared"])
     scopes = list(dict.fromkeys(scopes))
-    if eeg and any(scope not in EEG_SCOPE_IDS for scope in scopes):
+    if eeg and any(scope not in eeg_scope_ids for scope in scopes):
         raise ValueError("The EEG study supports only the shared and broader ICU scopes.")
-    if eeg_definitive and set(scopes) != set(EEG_SCOPE_IDS):
+    if eeg_definitive and set(scopes) != set(eeg_scope_ids):
         raise ValueError("Definitive EEG requests must include both study scopes.")
     if eeg_definitive and (args.bootstrap, args.bootstrap_seed, args.bootstrap_stratified) != (5000, 0, False):
         raise ValueError("Definitive EEG reporting requires 5,000 unstratified patient bootstraps with seed 0.")
@@ -298,7 +298,7 @@ def execute(args) -> int:
                           "bootstrap_seed": args.bootstrap_seed, "bootstrap_stratified": args.bootstrap_stratified},
         }
         if eeg:
-            manifest.update(study_profile="eeg", manifest_cohort_id=EEG_SCOPE_IDS[scope], analysis_role="exploratory")
+            manifest.update(study_profile="eeg", manifest_cohort_id=eeg_scope_ids[scope], analysis_role="exploratory")
         for config in configs:
             if eeg_definitive and config["n_trials"] != 50:
                 raise ValueError("Definitive EEG requires 50 HPO trials for every model family.")
@@ -429,7 +429,7 @@ def execute(args) -> int:
                         configs = saved["configurations"]
                         gate_sha256 = file_sha256(control / "eeg_split_preflight.json")
                         if (saved.get("study_profile") != "eeg" or saved.get("diagnostic") is not False
-                                or saved.get("manifest_cohort_id") != EEG_SCOPE_IDS[scope]
+                                or saved.get("manifest_cohort_id") != eeg_scope_ids[scope]
                                 or saved.get("study_identity") != identity
                                 or saved.get("eeg_split_preflight_sha256") != gate_sha256
                                 or saved.get("split_plan") != eeg_preflight["split_plan"]

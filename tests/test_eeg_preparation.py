@@ -14,7 +14,7 @@ from data_preparation.artifact_metadata import file_sha256, metadata_path_for
 from data_preparation.catch24 import PYCATCH22_VERSION, descriptor_names, extract_catch24
 from data_preparation.inputs import MANDATORY_WAVEFORMS
 from data_preparation.step_04_intraop_prep import process_waveform_file
-from experimental.eeg.runtime import _require_isolation
+from experimental.eeg.runtime import _require_isolation, require_amplitude_cohort_confirmation
 
 
 @pytest.mark.skipif(PYCATCH22_VERSION != "1.0.2", reason="Tests the upgraded extractor's masking API")
@@ -119,3 +119,36 @@ def test_isolation_rejects_protected_tree_and_linked_outputs(tmp_path):
     with pytest.raises(ValueError, match="writable path alias"):
         _require_isolation(root, {"processed": root}, raw)
     assert original.read_text() == "before"
+
+
+def test_amplitude_confirmation_binds_the_case_audit_and_split(monkeypatch, tmp_path):
+    from data_preparation.eeg import AMPLITUDE_PROTOCOL
+    from experimental.eeg.verify_amplitude_cohort import CONFIRMATION_NAME
+
+    strict = tmp_path / "strict"
+    study = tmp_path / "amplitude"
+    processed = study / "data/processed"
+    control = study / "control"
+    monkeypatch.setenv("AKI_EEG_QC_PROTOCOL", AMPLITUDE_PROTOCOL)
+    monkeypatch.setenv("AKI_EEG_W4_REFERENCE", str(strict))
+    monkeypatch.setenv("PROCESSED_DIR", str(processed))
+    assert eeg_study.eeg_scope_identities()["main_shared"] == "eeg_main_shared_amplitude_v1"
+    with pytest.raises(ValueError, match="protected path"):
+        _require_isolation(strict, {}, tmp_path / "raw")
+
+    with pytest.raises(ValueError, match="Confirm the amplitude EEG cohort"):
+        require_amplitude_cohort_confirmation(study)
+    paths = {"split_preflight_sha256": control / "eeg_split_preflight.json",
+             "case_audit_sha256": processed / "eeg_operation_attrition.csv",
+             "fingerprint_sha256": processed / "eeg_extraction_checkpoints/fingerprint.json"}
+    for path in paths.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("frozen")
+    eeg_study.write_json(control / CONFIRMATION_NAME, {
+        "status": "confirmed", "protocol": AMPLITUDE_PROTOCOL,
+        **{key: file_sha256(path) for key, path in paths.items()},
+    })
+    require_amplitude_cohort_confirmation(study)
+    paths["case_audit_sha256"].write_text("changed")
+    with pytest.raises(ValueError, match="stale or incomplete"):
+        require_amplitude_cohort_confirmation(study)

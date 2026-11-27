@@ -424,7 +424,7 @@ def _run_experiments(args: argparse.Namespace) -> int:
 
 
 def _run_eeg_experiments(args: argparse.Namespace) -> int:
-    from experimental.eeg.runtime import configure_environment
+    from experimental.eeg.runtime import configure_environment, require_amplitude_cohort_confirmation
 
     if args.diagnostic or args.smoke:
         raise ValueError("Run EEG diagnostics through the gated smoke --study-profile eeg command.")
@@ -447,6 +447,7 @@ def _run_eeg_experiments(args: argparse.Namespace) -> int:
             raise ValueError("The EEG pilot track catalog is missing or changed.")
         os.environ["AKI_EEG_TRACK_CATALOG"] = str(track_catalog)
         if not args.preflight_only:
+            require_amplitude_cohort_confirmation(root)
             smoke = Path(os.environ["SMOKE_ROOT"]) / "eeg_smoke_passed.json"
             gate = root / "control/eeg_split_preflight.json"
             expected = {"status": "validated", "study_identity": _study_identity(),

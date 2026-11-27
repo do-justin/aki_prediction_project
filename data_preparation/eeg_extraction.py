@@ -17,7 +17,9 @@ from data_preparation.artifact_metadata import (
     ArtifactCompatibilityError, STEP_01_COHORT_ARTIFACT, file_sha256, metadata_path_for, read_versioned_csv,
 )
 from data_preparation.catch24 import descriptor_names
-from data_preparation.eeg import EEG_WAVEFORM, extract_eeg_case, protocol_fingerprint, raw_recording_path
+from data_preparation.eeg import (
+    AMPLITUDE_PROTOCOL, EEG_WAVEFORM, extract_eeg_case, protocol_fingerprint, qc_protocol, raw_recording_path,
+)
 from data_preparation.eeg_study import EEG_PROFILE, QC_NAME, TRACK_CATALOG_NAME, track_catalog, write_csv, write_json
 from data_preparation.inputs import (
     CATCH_22_ERROR_FILE, CATCH_22_FILE, CATCH_22_WINDOWED_FILE, COHORT_FILE, GENERATE_FULL_FEATURES,
@@ -30,10 +32,14 @@ EEG_EXTRACTION_PROTOCOL_VERSION = 4
 MODES = ("full", "windowed")
 WINDOW_STATS = ("mean", "std", "min", "max")
 CHANNELS = (*MANDATORY_WAVEFORMS, EEG_WAVEFORM)
+# Reader that produced the frozen strict run's original-four checkpoints.
+STRICT_TRACK_READER_SHA256 = "d3f3ed2c526db55f400a60ef58af08d500d3272acc419b169dfec52bc080c014"
 _cache_dir: Path
 _download_slots = None
 _download_failure: str | None
 _track_sources: dict[str, str]
+_w4_reference: Path | None = None
+_w4_checkpoint_hashes: dict[int, str]
 
 
 def _raw_release() -> dict[str, str]:
@@ -58,12 +64,50 @@ def _recording_identities(cohort: pd.DataFrame) -> str:
     return digest.hexdigest()
 
 
+def _branch_output_paths(processed: Path | None = None) -> dict[str, tuple[Path, Path]]:
+    paths = {
+        "full": (CATCH_22_FILE, CATCH_22_ERROR_FILE),
+        "windowed": (CATCH_22_WINDOWED_FILE,
+                     CATCH_22_ERROR_FILE.with_name(CATCH_22_ERROR_FILE.stem + "_windowed.csv")),
+    }
+    if processed is None:
+        return paths
+    return {mode: (processed / feature.name, processed / error.name)
+            for mode, (feature, error) in paths.items()}
+
+
+def _reference_file(path: Path) -> Path:
+    if not path.is_file() or path.resolve() != path:
+        raise ArtifactCompatibilityError(f"Missing or aliased strict EEG reference file: {path}")
+    return path
+
+
+def _legacy_reference() -> tuple[Path | None, dict]:
+    configured = os.getenv("AKI_EEG_W4_REFERENCE")
+    if not configured:
+        return None, {}
+    if qc_protocol() != AMPLITUDE_PROTOCOL:
+        raise ValueError("AKI_EEG_W4_REFERENCE requires the amplitude-only EEG protocol.")
+    root = Path(os.environ["AKI_ARTIFACT_ROOT"]).resolve()
+    reference_root = Path(configured).expanduser().resolve(strict=True)
+    if reference_root.is_relative_to(root) or root.is_relative_to(reference_root):
+        raise ValueError("The strict EEG reference and the writable amplitude study must be disjoint.")
+    processed = reference_root / "data/processed"
+    paths = [processed / "eeg_extraction_checkpoints/fingerprint.json",
+             processed / "eeg_track_source_hashes.json",
+             *(metadata_path_for(features) for features, _ in _branch_output_paths(processed).values())]
+    return processed, {
+        "study_root": str(reference_root),
+        "files": {str(path.relative_to(processed)): file_sha256(_reference_file(path)) for path in paths},
+    }
+
+
 def eeg_fingerprints(cohort: pd.DataFrame, *, recording_sha256: str | None = None) -> dict[str, dict]:
     recordings = recording_sha256 or _recording_identities(cohort)
     protocol_hashes = {
         name: file_sha256(Path(__file__).with_name(name)) for name in ("eeg.py", "eeg_study.py", "eeg_extraction.py")
     }
-    return {
+    fingerprints = {
         mode: {
             **build_extraction_fingerprint(cohort, mode),
             "extraction_protocol_version": EEG_EXTRACTION_PROTOCOL_VERSION,
@@ -78,6 +122,11 @@ def eeg_fingerprints(cohort: pd.DataFrame, *, recording_sha256: str | None = Non
         }
         for mode in MODES
     }
+    reference, attestation = _legacy_reference()
+    if reference is not None:
+        for fingerprint in fingerprints.values():
+            fingerprint["original_four_reference"] = attestation
+    return fingerprints
 
 
 def _cached_track(tid: str, interval: float = 1) -> np.ndarray:
@@ -127,12 +176,16 @@ def _cached_track(tid: str, interval: float = 1) -> np.ndarray:
         raise RuntimeError(_download_failure) from exc
 
 
-def _init_worker(processed: Path, download_slots) -> None:
-    global _cache_dir, _download_slots
+def _init_worker(processed: Path, download_slots, reference: Path | None = None,
+                 checkpoint_hashes: dict[int, str] | None = None) -> None:
+    global _cache_dir, _download_slots, _w4_reference, _w4_checkpoint_hashes
     _cache_dir = processed / "eeg_legacy_track_cache"
     _download_slots = download_slots
-    dataset.dftrks = track_catalog(processed)
-    dataset.load_trk = _cached_track
+    _w4_reference = reference
+    _w4_checkpoint_hashes = checkpoint_hashes or {}
+    if reference is None:
+        dataset.dftrks = track_catalog(processed)
+        dataset.load_trk = _cached_track
 
 
 def _extract_operation(task: tuple[int, float, float, str]) -> dict:
@@ -145,14 +198,21 @@ def _extract_operation(task: tuple[int, float, float, str]) -> dict:
         raise ArtifactCompatibilityError(f"VitalDB recording checksum differs from release: {recording.name}")
     eeg, timings, qc = extract_eeg_case(caseid, start, end, RAW_DIR)
     results = {EEG_WAVEFORM: eeg}
-    for channel in MANDATORY_WAVEFORMS:
-        legacy, legacy_timings = _process_case((caseid, start, end, channel))
-        if _download_failure:
-            raise RuntimeError(_download_failure)
-        if "error" in legacy:
-            legacy = dict.fromkeys(MODES, legacy["error"])
-        results[channel] = legacy
-        timings[channel] = legacy_timings
+    if _w4_reference is None:
+        for channel in MANDATORY_WAVEFORMS:
+            legacy, legacy_timings = _process_case((caseid, start, end, channel))
+            if _download_failure:
+                raise RuntimeError(_download_failure)
+            if "error" in legacy:
+                legacy = dict.fromkeys(MODES, legacy["error"])
+            results[channel] = legacy
+            timings[channel] = legacy_timings
+    else:
+        source = recording.relative_to(RAW_DIR).as_posix()
+        saved = _read_reference_checkpoint(_w4_reference, caseid, {source: expected_sha}, _w4_checkpoint_hashes[caseid])
+        for channel in MANDATORY_WAVEFORMS:
+            results[channel] = saved["results"][channel]
+        _track_sources = saved["sources"]
     for channel, branch_records in results.items():
         if set(branch_records) != set(MODES):
             raise RuntimeError(f"Unexpected branch results for {caseid}/{channel}")
@@ -166,8 +226,11 @@ def _extract_operation(task: tuple[int, float, float, str]) -> dict:
             "results": results, "timings": timings, "qc": qc}
 
 
-def _checked_checkpoint(path: Path, caseid: int, release: dict[str, str]) -> dict:
-    payload = json.loads(path.read_text())
+def _checked_checkpoint(path: Path, caseid: int, release: dict[str, str], *, sha256: str | None = None) -> dict:
+    data = path.read_bytes()
+    if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
+        raise ArtifactCompatibilityError(f"Strict EEG checkpoint changed after reference verification: {path}")
+    payload = json.loads(data)
     raw_name = raw_recording_path(RAW_DIR, caseid).relative_to(RAW_DIR).as_posix()
     if payload.get("caseid") != caseid or payload.get("eeg_recording_sha256") != release.get(raw_name):
         raise ArtifactCompatibilityError(f"EEG checkpoint operation or recording identity differs: {path}")
@@ -180,6 +243,11 @@ def _checked_checkpoint(path: Path, caseid: int, release: dict[str, str]) -> dic
         ):
             raise ArtifactCompatibilityError(f"EEG checkpoint branch identity differs: {path}")
     return payload
+
+
+def _read_reference_checkpoint(reference: Path, caseid: int, release: dict[str, str], digest: str) -> dict:
+    checkpoint = _reference_file(reference / "eeg_extraction_checkpoints" / f"{caseid}.json")
+    return _checked_checkpoint(checkpoint, caseid, release, sha256=digest)
 
 
 def _flatten_qc(payload: dict) -> dict:
@@ -198,23 +266,91 @@ def _flatten_qc(payload: dict) -> dict:
     return qc
 
 
-def _assemble(checkpoints: Path, caseids: list[int], fingerprints: dict[str, dict], release: dict[str, str]) -> None:
-    outputs = {
-        "full": (CATCH_22_FILE, CATCH_22_ERROR_FILE),
-        "windowed": (CATCH_22_WINDOWED_FILE, CATCH_22_ERROR_FILE.with_name(CATCH_22_ERROR_FILE.stem + "_windowed.csv")),
-    }
+def _branch_frames(mode: str, features: list[dict], errors: list[dict], names: list[str]):
+    descriptors = names if mode == "full" else [f"{name}_{stat}" for stat in WINDOW_STATS for name in names]
+    return (pd.DataFrame(features, columns=["caseid", "waveform", *descriptors]),
+            pd.DataFrame(errors, columns=["caseid", "waveform", "error"]))
+
+
+def _verify_legacy_reference(reference: Path, caseids: list[int], fingerprints: dict[str, dict],
+                             release: dict[str, str]) -> dict[int, str]:
+    """Reconstruct strict published outputs from the exact checkpoint bytes to be reused."""
+    checkpoints = reference / "eeg_extraction_checkpoints"
+    recorded = fingerprints[MODES[0]]["original_four_reference"]["files"]
+    for name, expected in recorded.items():
+        if file_sha256(_reference_file(reference / name)) != expected:
+            raise ArtifactCompatibilityError(f"Strict EEG reference changed during validation: {name}")
+    saved_fingerprints = json.loads((checkpoints / "fingerprint.json").read_text())
+    if set(saved_fingerprints) != set(MODES):
+        raise ArtifactCompatibilityError("The strict EEG reference must contain both extraction branches.")
+    excluded = {"eeg_protocol", "eeg_code_sha256", "original_four_reference"}
+    for mode in MODES:
+        prior = saved_fingerprints[mode]
+        if (prior["eeg_protocol"]["protocol"] != "eeg-qc-v1"
+                or prior["eeg_code_sha256"]["eeg_extraction.py"] != STRICT_TRACK_READER_SHA256
+                or prior.keys() != fingerprints[mode].keys() - {"original_four_reference"}
+                or any(prior[key] != fingerprints[mode][key] for key in prior.keys() - excluded)):
+            raise ArtifactCompatibilityError(f"Incompatible original-four reference extraction parameters: {mode}")
+
+    features = {mode: [] for mode in MODES}
+    errors = {mode: [] for mode in MODES}
+    track_hashes = json.loads((reference / "eeg_track_source_hashes.json").read_text())
+    seen_tracks = set()
+    hashes = {}
+    for caseid in caseids:
+        checkpoint = _reference_file(checkpoints / f"{caseid}.json")
+        hashes[caseid] = file_sha256(checkpoint)
+        payload = _checked_checkpoint(checkpoint, caseid, release, sha256=hashes[caseid])
+        for tid, digest in payload["sources"].items():
+            if not tid.isalnum() or track_hashes.get(tid) != digest:
+                raise ArtifactCompatibilityError(f"Strict EEG checkpoint track identity differs: {checkpoint}")
+            seen_tracks.add(tid)
+        for channel in CHANNELS:
+            for mode, row in payload["results"][channel].items():
+                (errors if "error" in row else features)[mode].append(row)
+    if seen_tracks != track_hashes.keys():
+        raise ArtifactCompatibilityError("Strict EEG reference track roster differs from its extraction checkpoints.")
+
+    names = descriptor_names()
+    for mode, (feature_path, error_path) in _branch_output_paths(reference).items():
+        published = json.loads(metadata_path_for(feature_path).read_text())
+        if (published["requested_caseids"] != caseids
+                or published["extraction_fingerprint"] != saved_fingerprints[mode]
+                or published["source_track_hashes_sha256"] != recorded["eeg_track_source_hashes.json"]
+                or published["data_sha256"] != file_sha256(_reference_file(feature_path))):
+            raise ArtifactCompatibilityError(f"Incompatible strict EEG assembled feature metadata: {feature_path}")
+        for frame, path in zip(_branch_frames(mode, features[mode], errors[mode], names), (feature_path, error_path)):
+            actual = hashlib.sha256(frame.to_csv(index=False, float_format="%.17g").encode()).hexdigest()
+            if actual != file_sha256(_reference_file(path)):
+                raise ArtifactCompatibilityError(f"Strict EEG checkpoints do not reconstruct published output: {path}")
+    return hashes
+
+
+def _assemble(checkpoints: Path, caseids: list[int], fingerprints: dict[str, dict], release: dict[str, str],
+              *, reference: Path | None = None, reference_hashes: dict[int, str] | None = None) -> None:
+    outputs = _branch_output_paths()
+    source_dir = (reference if reference is not None else PROCESSED_DIR) / "eeg_legacy_track_cache"
     features = {mode: [] for mode in MODES}
     errors = {mode: [] for mode in MODES}
     audits = []
     source_hashes = {}
     for caseid in caseids:
-        payload = _checked_checkpoint(checkpoints / f"{caseid}.json", caseid, release)
+        path = checkpoints / f"{caseid}.json"
+        payload = _checked_checkpoint(path, caseid, release)
+        if reference is not None:
+            prior = _read_reference_checkpoint(reference, caseid, release, reference_hashes[caseid])
+            if (payload["sources"] != prior["sources"] or any(
+                payload["results"][channel] != prior["results"][channel] for channel in MANDATORY_WAVEFORMS
+            )):
+                raise ArtifactCompatibilityError(f"Reused original-four data differs from the strict reference: {path}")
         audits.append(_flatten_qc(payload))
         for tid, expected in payload["sources"].items():
             if not tid.isalnum() or (tid in source_hashes and source_hashes[tid] != expected):
                 raise ArtifactCompatibilityError(f"Conflicting cached VitalDB track identity: {tid}")
             if tid not in source_hashes:
-                source = PROCESSED_DIR / "eeg_legacy_track_cache" / f"{tid}.csv.gz"
+                source = source_dir / f"{tid}.csv.gz"
+                if reference is not None:
+                    _reference_file(source)
                 if not source.is_file() or file_sha256(source) != expected:
                     raise ArtifactCompatibilityError(f"Cached VitalDB source changed: {source}")
                 source_hashes[tid] = expected
@@ -226,10 +362,9 @@ def _assemble(checkpoints: Path, caseids: list[int], fingerprints: dict[str, dic
     write_csv(PROCESSED_DIR / QC_NAME, qc)
     write_json(PROCESSED_DIR / "eeg_track_source_hashes.json", source_hashes)
     for mode, (feature_path, error_path) in outputs.items():
-        descriptors = names if mode == "full" else [f"{name}_{stat}" for stat in WINDOW_STATS for name in names]
-        feature_cols = ["caseid", "waveform", *descriptors]
-        write_csv(feature_path, pd.DataFrame(features[mode], columns=feature_cols))
-        write_csv(error_path, pd.DataFrame(errors[mode], columns=["caseid", "waveform", "error"]))
+        feature_frame, error_frame = _branch_frames(mode, features[mode], errors[mode], names)
+        write_csv(feature_path, feature_frame)
+        write_csv(error_path, error_frame)
         write_json(metadata_path_for(feature_path), {
             "extraction_protocol_version": EEG_EXTRACTION_PROTOCOL_VERSION,
             "extraction_fingerprint": fingerprints[mode], "error_file": str(error_path),
@@ -252,9 +387,17 @@ def main() -> None:
     if cohort["caseid"].duplicated().any():
         raise ValueError("Duplicate EEG extraction case IDs.")
     fingerprints = eeg_fingerprints(cohort)
+    reference, _ = _legacy_reference()
+    release = _raw_release()
+    caseids = sorted(int(caseid) for caseid in cohort["caseid"])
+    reference_hashes = {}
+    if reference is not None:
+        print(f"Checking published strict reference checkpoints for {len(caseids)} operations", flush=True)
+        reference_hashes = _verify_legacy_reference(reference, caseids, fingerprints, release)
     checkpoints = PROCESSED_DIR / "eeg_extraction_checkpoints"
     checkpoints.mkdir(exist_ok=True)
-    (PROCESSED_DIR / "eeg_legacy_track_cache").mkdir(exist_ok=True)
+    if reference is None:
+        (PROCESSED_DIR / "eeg_legacy_track_cache").mkdir(exist_ok=True)
     identity = checkpoints / "fingerprint.json"
     if identity.exists():
         if json.loads(identity.read_text()) != fingerprints:
@@ -264,12 +407,9 @@ def main() -> None:
             raise ArtifactCompatibilityError("EEG checkpoint has no fingerprint.")
         write_json(identity, fingerprints)
 
-    release = _raw_release()
-    caseids = []
     pending = []
     for caseid, start, end in cohort[COHORT_REQUIRED_COLUMNS].sort_values("caseid").itertuples(index=False, name=None):
         caseid = int(caseid)
-        caseids.append(caseid)
         if not (checkpoints / f"{caseid}.json").exists():
             name = raw_recording_path(RAW_DIR, caseid).relative_to(RAW_DIR).as_posix()
             pending.append((caseid, float(start), float(end), release[name]))
@@ -283,10 +423,13 @@ def main() -> None:
         raise ValueError("EEG extraction worker count, download limit, and idle timeout must be positive.")
     if pending:
         workers = min(workers, len(pending))
+        source_status = (f"up to {downloads} concurrent VitalDB downloads" if reference is None
+                         else "verified original-four waveform checkpoints")
         print(f"Extracting {len(pending)} remaining EEG-study operations with {workers} workers "
-              f"and up to {downloads} concurrent VitalDB downloads", flush=True)
-        download_slots = BoundedSemaphore(downloads)
-        with Pool(processes=workers, initializer=_init_worker, initargs=(PROCESSED_DIR, download_slots)) as pool:
+              f"and {source_status}", flush=True)
+        download_slots = BoundedSemaphore(downloads) if reference is None else None
+        with Pool(processes=workers, initializer=_init_worker,
+                  initargs=(PROCESSED_DIR, download_slots, reference, reference_hashes)) as pool:
             results = pool.imap_unordered(_extract_operation, pending, chunksize=1)
             for completed in range(1, len(pending) + 1):
                 try:
@@ -296,7 +439,7 @@ def main() -> None:
                 write_json(checkpoints / f"{payload['caseid']}.json", payload)
                 if completed % 25 == 0 or completed == len(pending):
                     print(f"Committed {completed}/{len(pending)} EEG-study operations", flush=True)
-    _assemble(checkpoints, caseids, fingerprints, release)
+    _assemble(checkpoints, caseids, fingerprints, release, reference=reference, reference_hashes=reference_hashes)
 
 
 if __name__ == "__main__":

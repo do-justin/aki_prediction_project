@@ -30,6 +30,14 @@ def eeg_profile() -> bool:
     return os.getenv("AKI_STUDY_PROFILE") == EEG_PROFILE
 
 
+def eeg_scope_identities() -> dict[str, str]:
+    from data_preparation.eeg import AMPLITUDE_PROTOCOL, qc_protocol
+
+    if qc_protocol() == AMPLITUDE_PROTOCOL:
+        return {scope: f"eeg_{scope}_amplitude_v1" for scope in EEG_SCOPE_IDENTITIES}
+    return EEG_SCOPE_IDENTITIES
+
+
 def write_json(path: Path, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n")
@@ -172,7 +180,8 @@ def write_attrition(processed: Path, complete: set[int], *, branch_complete: dic
                               "excluded_at_stage": _counts(audit[excluded])})
         previous = mask
     scopes = {}
-    for scope, identity in EEG_SCOPE_IDENTITIES.items():
+    identities = eeg_scope_identities()
+    for scope, identity in identities.items():
         selected = select_cohort(cohort, scope)
         audit[f"in_{scope}"] = audit["caseid"].isin(selected["caseid"])
         scopes[scope] = {"cohort_manifest_identity": identity, **_counts(selected, SCOPE_OUTCOMES[scope])}
@@ -186,7 +195,7 @@ def write_attrition(processed: Path, complete: set[int], *, branch_complete: dic
         reference_data = pd.read_csv(reference_path, usecols=["caseid", "subjectid", "eligible_any_aki", "aki_label",
                                                              "eligible_icu_admission", "y_icu_admit"])
         reference_info = {"path": str(reference_path), "sha256": file_sha256(reference_path)}
-        for scope in EEG_SCOPE_IDENTITIES:
+        for scope in identities:
             roster = select_cohort(reference_data, scope)
             selections[f"manuscript_{scope}"] = audit[audit["caseid"].isin(roster["caseid"])]
     overlapping = {}

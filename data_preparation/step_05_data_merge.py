@@ -23,7 +23,7 @@ from data_preparation.artifact_metadata import (
 from data_preparation.cohort_scopes import (
     COHORT_SCOPES, build_cohort_manifest, cohort_counts, select_cohort, selected_case_hash,
 )
-from data_preparation.eeg_study import EEG_PROFILE, EEG_SCOPE_IDENTITIES, eeg_profile, write_attrition
+from data_preparation.eeg_study import EEG_PROFILE, eeg_profile, eeg_scope_identities, write_attrition
 from data_preparation.inputs import (
     PREOP_PROCESSED_FILE,
     INTRAOP_WIDE_FILE,
@@ -59,7 +59,7 @@ def write_branch_roster_manifest(branch_files: dict[str, Path], output_path: Pat
         for name, path in branch_files.items()
     }
     intersections = {}
-    for scope in EEG_SCOPE_IDENTITIES if eeg_profile() else COHORT_SCOPES:
+    for scope in eeg_scope_identities() if eeg_profile() else COHORT_SCOPES:
         selected = {name: select_cohort(frame, scope) for name, frame in branches.items()}
         common_caseids = set.intersection(*(set(frame["caseid"]) for frame in selected.values()))
         common = next(iter(selected.values())).loc[lambda frame: frame["caseid"].isin(common_caseids)]
@@ -149,10 +149,11 @@ def merge_and_save(
     # Small programmatic utility tests may supply only a subset of outcome/ID
     # columns; production main() always requires the full versioned schema.
     if {"subjectid", "eligible_any_aki", "aki_label", "eligible_icu_admission", "y_icu_admit"}.issubset(master_df):
-        scopes = EEG_SCOPE_IDENTITIES if complete_caseids is not None else COHORT_SCOPES
+        identities = eeg_scope_identities() if complete_caseids is not None else {}
+        scopes = identities or COHORT_SCOPES
         cohort_manifests = {scope: build_cohort_manifest(master_df, scope, branch) for scope in scopes}
-        for scope in EEG_SCOPE_IDENTITIES if complete_caseids is not None else ():
-            cohort_manifests[scope]["cohort_manifest_identity"] = EEG_SCOPE_IDENTITIES[scope]
+        for scope, identity in identities.items():
+            cohort_manifests[scope]["cohort_manifest_identity"] = identity
     
     # 3. Check for Merge Issues
     merge_nan_count = master_df.isnull().sum().sum()

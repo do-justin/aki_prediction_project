@@ -24,6 +24,7 @@ from sklearn.metrics import precision_recall_curve, roc_curve
 from artifact_paths import enforce_storage_policy, get_artifact_root, get_processed_dir, get_raw_dir
 from data_preparation.artifact_metadata import file_sha256
 from data_preparation.cohort_scopes import selected_case_hash
+from data_preparation.eeg_study import eeg_scope_identities
 from reporting import publication_style as style
 from reporting.cohort_flow import CohortStage
 from reporting.display_dictionary import load_display_dictionary
@@ -47,8 +48,7 @@ from results_recreation.metrics_summary import (
 from results_recreation.results_analysis import PlotConfig, _calibration_bins
 from runtime_resources import resource_snapshot
 
-SCOPES = {"main_shared": ("Shared AKI/ICU", "eeg_main_shared_v1"),
-          "icu_waveform_sensitivity": ("Broader ICU", "eeg_icu_waveform_sensitivity_v1")}
+SCOPES = {"main_shared": "Shared AKI/ICU", "icu_waveform_sensitivity": "Broader ICU"}
 LABELS = {
     "pleth_only": "PPG", "ecg_only": "ECG", "co2_only": "CO₂", "awp_only": "Airway pressure", "eeg_only": "EEG",
 }
@@ -88,7 +88,7 @@ def _scope_inputs(artifact_root, processed, scope):
     root = _within(artifact_root / "results/catch22/experiments" / scope / "nested_cv", artifact_root)
     manifest_path = _within(root / "run_manifest.json", root)
     manifest = json.loads(manifest_path.read_text())
-    cohort_id = SCOPES[scope][1]
+    cohort_id = eeg_scope_identities()[scope]
     if (manifest.get("status"), manifest.get("diagnostic"), manifest.get("study_profile"),
             manifest.get("cohort_scope"), manifest.get("manifest_cohort_id")) != ("validated", False, "eeg", scope, cohort_id):
         raise ValueError(f"Expected a validated definitive EEG manifest for {scope}: {manifest_path}")
@@ -168,7 +168,7 @@ def _attrition_sources(path, studies):
     for scope, study in studies.items():
         expected = attrition["scopes"][scope]
         roster = study["manifest"]["branch_rosters"]["non_windowed"]
-        if (expected.get("cohort_manifest_identity") != SCOPES[scope][1]
+        if (expected.get("cohort_manifest_identity") != study["manifest"]["manifest_cohort_id"]
                 or any(expected[key] != roster[key] for key in ("operations", "patients"))):
             raise ValueError(f"EEG attrition counts disagree with {scope} roster")
         for outcome in {key[1] for key in study["predictions"]}:
@@ -474,7 +474,7 @@ def _write_scope_assets(study, out, scope, *, fold_workers, fold_cache=None, cur
         branch_out.mkdir()
         for kind in ("roc", "pr", "calibration"):
             fig, source = _discrimination(curves, branch, kind)
-            fig.set_label(f"{SCOPES[scope][0]} · {BRANCHES[branch]} · {kind.upper()}")
+            fig.set_label(f"{SCOPES[scope]} · {BRANCHES[branch]} · {kind.upper()}")
             _save_figure(fig, branch_out, kind, source)
         for paired in (False, True):
             key = "paired_net_benefit" if paired else "net_benefit"
@@ -528,7 +528,8 @@ def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | No
     raw = get_raw_dir(Path(__file__).resolve().parents[1])
     table_1, table_s2 = descriptive_tables(studies, processed, attrition)
     table_2, performance = performance_table(shared, artifact_root=artifact_root)
-    table_s1 = predictor_tables(shared, extractor_version=protocol["versions"]["pycatch22"], raw=raw)
+    table_s1 = predictor_tables(shared, extractor_version=protocol["versions"]["pycatch22"], raw=raw,
+                                eeg_protocol=protocol["protocol"])
     output.mkdir(parents=True, exist_ok=True)
     fold_fingerprint = _fold_export_fingerprint()
     fold_caches = _published_fold_cache(output, fold_fingerprint)

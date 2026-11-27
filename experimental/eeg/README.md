@@ -20,6 +20,18 @@ In the outcome-blinded comparison, whole-operation Catch24 on one 4-hour-25-minu
 - [ ] Complete all 414 configurations and rebuild all displays and companion exports. Confirm that each scope's run manifest is validated and the EEG display manifest traces to the saved artifacts.
 - [ ] Review Word and PDF books, rerun protected-source checksum checks, and record definitive resource use and paired EEG effects.
 
+## Amplitude-screened EEG rerun
+
+The strict `eeg-qc-v1` study combined waveform gaps, nonfinite samples, low or unavailable BIS SQI, and amplitude excursions under a 5% limit. The saved-mask audit attributed 1,534 of its 1,958 signal-quality rejections to operations where SQI below 50 alone exceeded 5% of the operative interval. In outcome-blind raw-trace spot checks, some complete low-SQI segments had similar amplitude to nearby unflagged segments, while large excursions also appeared at SQI 100. These observations motivate treating waveform completeness and monitor-reported quality separately.
+
+The `eeg-qc-amplitude-v1` protocol flags missing or nonfinite samples and raw absolute amplitudes above 100 µV. Their union may cover at most 5% of the expected operative interval. It uses linear interpolation with nearest endpoint fill before the existing zero-phase 0.5–50 Hz Butterworth filter. BIS SQI is descriptive metadata and is excluded from the mask, eligibility and predictors. Native 128 Hz sampling, source selection, the variability guard, Catch24, and both extraction branches retain their established settings.
+
+Amplitude excursions can affect direct amplitude statistics and the standardized series used by other Catch24 descriptors. [Seo et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC8040410/), [Giattino et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC5420579/), and [Xi et al.](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0199120) support a ±100 µV screening heuristic for segments or epochs. Our sample-level mask, interpolation, and 5% case rule are adaptations. The cutoff can also flag physiological high-amplitude activity. The protocol was selected on methodological grounds and the outcome-blind trace review, without comparing model performance across QC settings. The earlier strict study is the sensitivity reference. A same-operation comparison would be needed to separate preprocessing effects from selection effects.
+
+The replay projected 5,088 cases passing the EEG screen. With the original four modalities and outcome eligibility applied, it projected 3,153 shared operations in 3,048 patients, with 173 AKI events and 756 ICU admissions, and 5,010 broader ICU operations in 4,851 patients, with 936 ICU admissions. Adding the amplitude mask reduced the projected shared cohort by 36 operations (1.1%) relative to raw completeness alone. The rerun uses the native local release. Recovery of the 100 catalog-listed cases absent from the local recordings is a separate source-validation question.
+
+Use `AKI_EEG_QC_PROTOCOL=eeg-qc-amplitude-v1` with the separate default root `studies/eeg-feasibility-pycatch22-1.0.2-amplitude-v1`. Set `AKI_EEG_W4_REFERENCE` to the completed strict study root. After feature extraction and the split preflight, the supervisor checks the new case identities and counts against an independent replay from the strict masks before admitting diagnostic or definitive fits. The confirmation is recorded in `control/eeg_amplitude_cohort_confirmation.json`.
+
 ## Commands
 
 Run these commands from the EEG upgrade worktree. The launcher uses the study root below by default and resolves every write within it.

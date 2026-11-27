@@ -27,7 +27,7 @@ def _sqi(times, values):
     )
 
 
-def _recording(monkeypatch, tmp_path, tracks, *, unreadable_primary=False):
+def _recording(monkeypatch, tmp_path, tracks, *, unreadable_primary=False, unreadable_sqi=False):
     path = eeg.raw_recording_path(tmp_path, 1)
     path.parent.mkdir()
     path.touch()
@@ -38,6 +38,8 @@ def _recording(monkeypatch, tmp_path, tracks, *, unreadable_primary=False):
         calls.append(tuple(track_names))
         if unreadable_primary and eeg.EEG_WAVEFORM in track_names:
             raise OSError("primary packet decoding failed")
+        if unreadable_sqi and eeg.SQI_TRACK in track_names:
+            raise OSError("SQI packet decoding failed")
         return SimpleNamespace(dtstart=ORIGIN, trks={name: tracks[name] for name in track_names if name in tracks})
 
     monkeypatch.setattr(eeg.vitaldb, "VitalFile", read)
@@ -197,6 +199,54 @@ def test_qc_union_boundary_and_linear_fill(monkeypatch, add_masked_sample):
         assert qc["interpolated_fraction"] == .05
         assert qc["max_interior_gap_seconds"] == 2 / 128
         assert qc["trailing_filled_seconds"] == 1 / 128
+
+
+@pytest.mark.parametrize("extra_excursion", [False, True])
+def test_amplitude_protocol_retains_raw_limit_and_only_audits_low_sqi(monkeypatch, tmp_path, extra_excursion):
+    raw = _signal()[32:-32]
+    raw[10:14] = np.nan
+    raw[80:108 + int(extra_excursion)] = 101
+    raw[120:122] = [-100, 100]
+    _recording(monkeypatch, tmp_path, {
+        eeg.EEG_WAVEFORM: _waveform(raw, start=32 / 128),
+        eeg.SQI_TRACK: _sqi(range(15), [10] * 15),
+    })
+    monkeypatch.delenv("AKI_EEG_QC_PROTOCOL", raising=False)
+    strict = eeg.protocol_fingerprint()
+    assert strict["protocol"] == eeg.PROTOCOL
+    assert strict["unusable_policy"] == "union_over_entire_expected_grid_max_inclusive_5_percent"
+    assert "sqi_role" not in strict
+    assert eeg.load_clean_eeg(1, 0, 15, tmp_path).clean is None
+
+    monkeypatch.setenv("AKI_EEG_QC_PROTOCOL", eeg.AMPLITUDE_PROTOCOL)
+    fingerprint = eeg.protocol_fingerprint()
+    assert fingerprint["protocol"] == eeg.AMPLITUDE_PROTOCOL
+    assert fingerprint["sqi_role"] == "descriptive_metadata_only"
+    assert fingerprint["filter"] == strict["filter"]
+    loaded = eeg.load_clean_eeg(1, 0, 15, tmp_path)
+    assert loaded.qc["protocol"] == eeg.AMPLITUDE_PROTOCOL
+    assert loaded.qc["mask_counts"] == {
+        "source_missing": 64, "source_nonfinite": 4, "sqi_unknown": 0, "sqi_low": 1920,
+        "raw_amplitude_high": 28 + int(extra_excursion), "unusable_union": 96 + int(extra_excursion),
+    }
+    assert not loaded.masks["unusable_union"][152:154].any()
+    if extra_excursion:
+        assert loaded.clean is None
+        assert loaded.qc["failure_reason"] == "unusable_fraction_above_5_pct"
+    else:
+        assert np.isfinite(loaded.clean).all()
+        assert loaded.qc["interpolated_samples"] == 96
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_amplitude_protocol_allows_unavailable_sqi(monkeypatch, tmp_path, unreadable):
+    monkeypatch.setenv("AKI_EEG_QC_PROTOCOL", eeg.AMPLITUDE_PROTOCOL)
+    _recording(monkeypatch, tmp_path, {eeg.EEG_WAVEFORM: _waveform(_signal())}, unreadable_sqi=unreadable)
+    _, _, qc = eeg.extract_eeg_case(1, 0, 15, tmp_path)
+    assert qc["sqi_status"] == ("unreadable" if unreadable else "absent")
+    assert qc["mask_counts"]["sqi_unknown"] == qc["expected_samples"]
+    assert qc["interpolated_samples"] == 0
+    assert qc["branch_status"] == {"full": "success", "windowed": "success"}
 
 
 def test_missing_packet_edges_count_against_expected_duration(monkeypatch, tmp_path):

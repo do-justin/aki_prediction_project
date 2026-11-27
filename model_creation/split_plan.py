@@ -148,15 +148,16 @@ def merged_branch_path(processed_dir: Path, branch: str) -> Path:
 def eeg_input_fingerprints(processed_dir: Path) -> dict:
     """Bind both matrices and the exact preprocessing provenance for each."""
     from data_preparation.artifact_metadata import file_sha256, load_artifact_metadata, metadata_path_for
-    from model_creation.utils import EEG_SCOPE_IDS
+    from data_preparation.eeg_study import eeg_scope_identities
 
+    scope_ids = eeg_scope_identities()
     identity = {"dataset_sha256": {}, "input_provenance_sha256": {}}
     for branch in ("non_windowed", "windowed"):
         path = merged_branch_path(processed_dir, branch)
         metadata = load_artifact_metadata(path)
         if (metadata.get("study_profile") != "eeg" or not metadata.get("extraction_fingerprint")
                 or any(metadata.get("cohort_scopes", {}).get(scope, {}).get("cohort_manifest_identity") != value
-                       for scope, value in EEG_SCOPE_IDS.items())):
+                       for scope, value in scope_ids.items())):
             raise ValueError(f"Missing EEG protocol or cohort identity in {path}.")
         dataset_hash = file_sha256(path)
         if metadata.get("data_sha256") != dataset_hash:

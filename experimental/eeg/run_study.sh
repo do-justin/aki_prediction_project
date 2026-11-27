@@ -6,7 +6,6 @@ cd "$worktree"
 project_conda="${AKI_CONDA_INIT:-/home/exouser/miniforge3/etc/profile.d/conda.sh}"
 source "$project_conda"
 conda activate aki_prediction_project_eeg_pycatch102
-export AKI_ARTIFACT_ROOT="${AKI_ARTIFACT_ROOT:-/media/volume/catch22/data/aki_prediction_project/studies/eeg-feasibility-pycatch22-1.0.2-v1}"
 export RAW_DIR="${RAW_DIR:-/media/volume/catch22/projects/aki_prediction_project/data/raw}"
 export PYTHONDONTWRITEBYTECODE=1
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
@@ -17,7 +16,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-python -B -c 'from experimental.eeg.runtime import configure_environment; configure_environment()'
+AKI_ARTIFACT_ROOT="$(python -B -c 'from experimental.eeg.runtime import configure_environment; print(configure_environment())')"
+export AKI_ARTIFACT_ROOT
 control="$AKI_ARTIFACT_ROOT/control"
 mkdir -p "$control"
 exec 9>"$control/eeg-supervisor.lock"
@@ -49,6 +49,14 @@ trap finish EXIT
 record running
 python -B -m run_catch22 experiments --study-profile eeg --preflight-only
 record_timing 0
+if [[ "${AKI_EEG_QC_PROTOCOL:-}" == eeg-qc-amplitude-v1 ]]; then
+    phase=cohort_confirmation
+    phase_started=$SECONDS
+    record running
+    python -B -m experimental.eeg.verify_amplitude_cohort \
+        --study-root "$AKI_ARTIFACT_ROOT" --strict-root "${AKI_EEG_W4_REFERENCE:?Set the strict EEG study reference}"
+    record_timing 0
+fi
 phase=diagnostic
 phase_started=$SECONDS
 record running
