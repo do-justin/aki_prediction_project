@@ -46,16 +46,22 @@ def cohort_selection(path, roster, out):
             raise ValueError(f"Cohort flow and selected main study disagree on {label}")
         outcomes.append(f"{label}: {events:,} operations ({events / total:.1%})")
 
+    save(cohort_flow_figure(stages, outcomes), out, "Figure_1", pd.DataFrame(stages))
+
+
+def cohort_flow_figure(stages, outcomes, *, cohort_note=None):
     fig = _draw_cohort_flow_fallback(stages, None, None, publication=True)
     width, height = fig.get_size_inches()
-    footer = .66
+    footer = .88 if cohort_note else .66
     fig.set_size_inches(width, height + footer)
     fig.axes[0].set_position([0, footer / (height + footer), 1, height / (height + footer)])
-    fig.text(.5, .41 / (height + footer), "Outcomes (may overlap)", ha="center", va="center",
+    fig.text(.5, (footer - .25) / (height + footer), "Outcomes (may overlap)", ha="center", va="center",
              fontsize=8.7, color=style.color("ink"))
-    fig.text(.5, .21 / (height + footer), "     ".join(outcomes), ha="center", va="center",
+    fig.text(.5, (footer - .45) / (height + footer), "     ".join(outcomes), ha="center", va="center",
              fontsize=style.STYLE["figure"]["title_pt"], color=style.color("ink"))
-    save(fig, out, "Figure_1", pd.DataFrame(stages))
+    if cohort_note:
+        fig.text(.5, .17 / (height + footer), cohort_note, ha="center", va="center", fontsize=8.7)
+    return fig
 
 
 def setup(rows, columns, height, **kwargs):

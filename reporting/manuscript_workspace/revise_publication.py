@@ -294,12 +294,15 @@ def add_predictors(doc, predictors):
                                  "PaCO₂", "PaO₂", "PT", "SD", "SpO₂"))
 
 
-def add_image(doc, label, image, caption, *, page_break=True):
-    heading(doc, f"{label}. {FIGURE_TITLES[label]}", page_break=page_break)
+def add_image(doc, label, image, caption, *, page_break=True, title=None, width=None):
+    title = FIGURE_TITLES[label] if title is None else title
+    heading(doc, f"{label}. {title}", page_break=page_break)
     p = doc.add_paragraph()
     p.paragraph_format.keep_with_next = True
     # A 4,110-pixel publication export provides 600 dpi at 6.85 inches.
-    p.add_run().add_picture(str(image), width=Inches(6.35 if label == "Figure S10" else 6.85))
+    if width is None:
+        width = 6.35 if label == "Figure S10" else 6.85
+    p.add_run().add_picture(str(image), width=Inches(width))
     caption_para = note(doc, caption)
     caption_para.paragraph_format.keep_together = True
 

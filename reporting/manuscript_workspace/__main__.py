@@ -20,6 +20,7 @@ def source_files() -> dict[Path, Path]:
     }
     for name in ("publication_style.py", "publication_style.json", "table_rendering.py"):
         files[Path("05_CODE") / name] = REPORTING / name
+    files[Path("05_CODE/explanation_figures.py")] = HERE / "explanation_figures.py"
     return files
 
 

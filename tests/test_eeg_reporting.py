@@ -206,33 +206,45 @@ def test_eeg_fold_workers_respect_report_budget_and_available_resources(monkeypa
 
 def test_eeg_descriptor_table_uses_frozen_extractor_definitions():
     import pycatch22
+    from reporting.eeg_manuscript_tables import descriptor_table
 
-    legacy = eeg_study._descriptor_table("0.4.5")
+    legacy = descriptor_table("0.4.5")
     assert legacy.attrs["pycatch22_version"] == "0.4.5"
     assert "DN_Mean" in legacy["Catch24 descriptor"].tolist()
 
     installed = version("pycatch22")
     with pytest.raises(ValueError, match=r"require the frozen pycatch22 9\.9\.9"):
-        eeg_study._descriptor_table("9.9.9")
+        descriptor_table("9.9.9")
     if installed == "0.4.5":
         return
 
-    current = eeg_study._descriptor_table(installed)
+    current = descriptor_table(installed)
     definition = pycatch22.feature_table(catch24=True)
     assert current["Catch24 descriptor"].tolist() == [row["name"] for row in definition]
     assert current["hctsa reference call"].tolist() == [row["hctsa_call"] for row in definition]
     assert "SP_Summaries_fft_wq_50" in current["Catch24 descriptor"].tolist()
-    sections = eeg_study._table_sections("Table S1", (pd.DataFrame(), pd.DataFrame(), current))
-    assert f"pycatch22 {installed}" in sections[-1]["notes"]
+    assert current.attrs["pycatch22_version"] == installed
 
 
-def test_eeg_assembles_numbered_word_and_vector_pdf_books(tmp_path):
+def test_eeg_assembles_numbered_word_and_pdf_proofs(tmp_path, monkeypatch):
     import shutil
+    import subprocess
 
     import matplotlib.pyplot as plt
+    from reporting.manuscript_workspace.revise_publication import add_frame
 
-    if not shutil.which("pdfunite"):
-        pytest.skip("Poppler is needed to merge vector PDF pages")
+    try:
+        writer = eeg_study._pdf_renderer()
+    except RuntimeError:
+        pytest.skip("LibreOffice Writer is needed to render the Word proofs")
+    if not shutil.which("pdftotext"):
+        pytest.skip("Poppler is needed to read the proofs")
+
+    def add_table(doc, label, frames):
+        add_frame(doc, frames[0], (3, 2))
+        return 1
+
+    monkeypatch.setattr(eeg_study, "add_table_display", add_table)
     fig, ax = plt.subplots(figsize=(7.8, 1.5))
     ax.plot([0, 1], [0, 1])
     eeg_study._save_figure(fig, tmp_path, "Figure 1", pd.DataFrame({"x": [0, 1], "y": [0, 1]}))
@@ -240,9 +252,11 @@ def test_eeg_assembles_numbered_word_and_vector_pdf_books(tmp_path):
         stem = label.replace(" ", "_")
         for suffix in (".pdf", ".png"):
             shutil.copyfile(tmp_path / f"Figure_1{suffix}", tmp_path / f"{stem}{suffix}")
-    table = lambda width: pd.DataFrame([list(range(width))], columns=[f"Col {i}" for i in range(width)])
-    books = eeg_study._books(tmp_path, {"Table 1": (table(3),), "Table 2": (table(7),),
-                                        "Table S1": (table(3), table(7), table(2)), "Table S2": (table(3),)})
+    table = pd.DataFrame({"Characteristic": ["Age, years"], "Overall": ["61 (53, 69)"]})
+    books = eeg_study._books(tmp_path, {label: (table,) for label in ("Table 1", "Table 2", "Table S1", "Table S2")},
+                            pdf_renderer=writer)
     assert len(books["Main_Figures_and_Tables"]["placed_dpi"]) == 5
     assert len(books["Supplementary_Figures_and_Tables"]["placed_dpi"]) == 8
-    assert (tmp_path / "Main_Figures_and_Tables.pdf").read_bytes().startswith(b"%PDF-")
+    proof = subprocess.check_output(["pdftotext", str(tmp_path / "Main_Figures_and_Tables.pdf"), "-"], text=True)
+    assert "61 (53, 69)" in proof
+    assert "Pooled held-out predictions" in proof

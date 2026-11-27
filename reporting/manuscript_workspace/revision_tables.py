@@ -138,10 +138,7 @@ def fitted_predictors(studies):
                           for (scope, family, branch, inputs), dims in sorted(dimensions.items())], audited
 
 
-def build_predictors(studies, workspace):
-    raw, dimensions, audited = fitted_predictors(studies)
-    clinical = pd.read_csv(workspace / "04_DATA/raw_source/clinical_parameters.csv").set_index("Parameter")
-    labs = pd.read_csv(workspace / "04_DATA/raw_source/lab_parameters.csv").set_index("Parameter")
+def clinical_predictor_table(raw, clinical, labs):
     observed = []
     for field in sorted(raw, key=lambda k: (k not in CATEGORIES, k)):
         if field in CATEGORIES:
@@ -160,8 +157,15 @@ def build_predictors(studies, workspace):
             label = CLINICAL_LABELS.get(field, source.Description)
             row = label, field, f"Continuous, {unit}" if pd.notna(source.Unit) else "Continuous, unitless", "VitalDB clinical table"
         observed.append(row)
+    return pd.DataFrame(observed, columns=["Predictor", "Model input", "Type or unit", "Source and timing"])
+
+
+def build_predictors(studies, workspace):
+    raw, dimensions, audited = fitted_predictors(studies)
+    clinical = pd.read_csv(workspace / "04_DATA/raw_source/clinical_parameters.csv").set_index("Parameter")
+    labs = pd.read_csv(workspace / "04_DATA/raw_source/lab_parameters.csv").set_index("Parameter")
     return {
-        "clinical": pd.DataFrame(observed, columns=["Predictor", "Model input", "Type or unit", "Source and timing"]),
+        "clinical": clinical_predictor_table(raw, clinical, labs),
         "channels": pd.DataFrame([spec for spec in CHANNEL_SPECS.values()], columns=[
             "Waveform", "VitalDB track", "Original sampling rate", "Filter"]),
         "descriptors": pd.DataFrame(DESCRIPTORS.items(), columns=["Canonical descriptor", "Description"]),

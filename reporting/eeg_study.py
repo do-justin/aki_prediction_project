@@ -10,7 +10,6 @@ import platform
 import shutil
 import subprocess
 import tempfile
-import textwrap
 from importlib.metadata import version
 from pathlib import Path
 
@@ -18,28 +17,30 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from docx import Document
-from docx.shared import Inches
 from joblib import Parallel, delayed, parallel_config
 from PIL import Image
 from sklearn.metrics import precision_recall_curve, roc_curve
 
-from artifact_paths import enforce_storage_policy, get_artifact_root, get_processed_dir
+from artifact_paths import enforce_storage_policy, get_artifact_root, get_processed_dir, get_raw_dir
 from data_preparation.artifact_metadata import file_sha256
 from data_preparation.cohort_scopes import selected_case_hash
 from reporting import publication_style as style
-from reporting.cohort_flow import CohortStage, _draw_cohort_flow_fallback
+from reporting.cohort_flow import CohortStage
 from reporting.display_dictionary import load_display_dictionary
 from reporting.eeg_explanations import NUMERIC_FOLD_FILES
-from reporting.figure_rendering import save_report_figure_bundle
-from reporting.manuscript_assets import write_pdf_sections
-from reporting.manuscript_workspace.revise_publication import add_frame, document, heading, note
-from reporting.manuscript_workspace.revision_data import BRANCHES, FAMILIES, IDENTITY, OUTCOMES
-from reporting.manuscript_workspace.revision_tables import CHANNEL_SPECS, DESCRIPTORS
-from reporting.preop_descriptives import (
-    CATEGORICAL_COLS, CONTINUOUS_COLS, TABLE_FOOTNOTE, _build_descriptive_table,
-    _restrict_to_roster, _summarize_continuous,
+from reporting.eeg_manuscript_figures import (
+    CALIBRATION_INPUTS, channels as _channels, contrasts as _contrast,
+    decision_curves as _dca, discrimination as _discrimination,
 )
-from results_recreation.comparisons import EEG_BASELINE_PAIRS, EEG_CORE, EEG_INCREMENT_PAIRS, load_comparison_artifacts
+from reporting.eeg_manuscript_tables import (
+    COHORT_SOURCES, PREDICTOR_DICTIONARIES, add_table_display, descriptive_tables,
+    performance_table, predictor_tables,
+)
+from reporting.figure_rendering import save_report_figure_bundle
+from reporting.manuscript_workspace.revise_publication import FIGURE_TITLES, add_image, document, heading
+from reporting.manuscript_workspace.revision_data import BRANCHES, FAMILIES, IDENTITY, OUTCOMES
+from reporting.manuscript_workspace.revision_figures import cohort_flow_figure
+from results_recreation.comparisons import EEG_INCREMENT_PAIRS, load_comparison_artifacts
 from results_recreation.metrics_summary import (
     _model_id, _prediction_content_hash, compute_point_metrics, crawl_predictions,
 )
@@ -48,42 +49,28 @@ from runtime_resources import resource_snapshot
 
 SCOPES = {"main_shared": ("Shared AKI/ICU", "eeg_main_shared_v1"),
           "icu_waveform_sensitivity": ("Broader ICU", "eeg_icu_waveform_sensitivity_v1")}
-CHANNELS = ("pleth_only", "ecg_only", "co2_only", "awp_only", "eeg_only", *EEG_CORE[1:3])
 LABELS = {
-    "preop_only": "Preoperative only", "original_four_waveforms": "Original four waveforms",
-    "all_five_waveforms": "All five waveforms", "preop_and_original_four": "Preoperative + original four",
-    "preop_and_all_five": "Preoperative + all five", "pleth_only": "PPG", "ecg_only": "ECG",
-    "co2_only": "CO₂", "awp_only": "Airway pressure", "eeg_only": "EEG",
+    "pleth_only": "PPG", "ecg_only": "ECG", "co2_only": "CO₂", "awp_only": "Airway pressure", "eeg_only": "EEG",
 }
-INPUT_STYLES = dict(zip(EEG_CORE, (('blue', '-'), ('orange', ':'), ('orange', '-'),
-                                  ('green', '--'), ('green', '-')), strict=True))
-METRIC_LABELS = {"auprc": "AP", "auroc": "AUROC", "brier": "Brier score"}
 MAIN = ("Figure 1", "Table 1", "Table 2", "Figure 2", "Figure 3", "Figure 4", "Figure 5")
 SUPPLEMENT = ("Table S1", "Table S2", *(f"Figure S{i}" for i in range(3, 11)))
-TITLES = dict(zip((*MAIN, *SUPPLEMENT), (
-    "Study cohort selection", "Shared cohort characteristics", "Performance by input configuration",
-    "Incremental discrimination", "Whole-operation ROC curves", "Global EBM term importance",
-    "EBM feature-response functions", "Predictors and waveform feature extraction",
-    "Shared and broader ICU cohorts", "Whole-operation precision–recall curves",
-    "Whole-operation calibration", "Average precision by waveform input",
-    "AUROC by waveform input", "Added discrimination for ICU admission by cohort",
-    "Decision curves", "Paired net benefit differences", "Held-out EBM prediction explanations",
-), strict=True))
+TITLES = {**FIGURE_TITLES, "Table 1": "Cohort characteristics", "Table 2": "Performance by input configuration",
+          "Table S1": "Predictors and feature extraction", "Table S2": "Main and broader ICU cohorts"}
 CI_NOTE = "95% patient-cluster intervals are conditional on the saved outer-fold fits."
 CAPTIONS = {
-    "Figure 1": "First exclusions are counted once. Patients may contribute more than one operation.",
-    "Figure 2": f"Candidate minus reference discrimination. P, preoperative. W4/W5, four/five waveforms. {CI_NOTE}",
-    "Figure 3": "Pooled calibrated outer-test predictions. The reference line indicates chance discrimination.",
-    "Figure 4": "Ten leading terms per outcome by mean native importance across five outer folds. A hollow marker indicates a term absent from that fitted fold.",
-    "Figure 5": "Native raw log-odds responses relative to a training-derived reference. Distributions and reference values use outer-training operations.",
-    "Figure S3": "Pooled calibrated outer-test predictions. The horizontal line shows operation-level outcome prevalence.",
-    "Figure S4": "Binned held-out reliability and the distribution of calibrated outer-test risk. A point summarizes a nonempty risk bin.",
-    "Figure S5": f"Waveform-only models. AP denotes average precision. {CI_NOTE}",
-    "Figure S6": f"Waveform-only models. {CI_NOTE}",
-    "Figure S7": f"Within-cohort contrasts. P, preoperative. W4/W5, four/five waveforms. {CI_NOTE}",
-    "Figure S8": "Exploratory decision curves from calibrated outer-test risk at prespecified thresholds.",
-    "Figure S9": "Candidate minus reference net benefit. Pointwise 95% patient-cluster intervals conditional on saved fits.",
-    "Figure S10": "Cases nearest the empirical 10th and 90th percentiles of combined-model outer-test risk within outcome. Case ID resolves ties. Contributions are on the calibrated log-odds scale.",
+    "Figure 1": "First exclusions are counted once. The shared cohort supports both acute kidney injury (AKI) and intensive care unit (ICU) admission analysis.",
+    "Figure 2": f"Paired differences within each outcome and model. P denotes preoperative inputs, W4 the original four waveforms, and W5 all five including EEG. {CI_NOTE}",
+    "Figure 3": "Pooled held-out predictions. AUROCs follow input legend order across both rows of values in each panel. The diagonal indicates chance.",
+    "Figure 4": "Mean absolute contribution to model log-odds, weighted by the training distribution. Bars show means across five folds and symbols show individual folds. Hollow symbols indicate absent terms.",
+    "Figure 5": "Combined whole-operation models with EEG. Curves show fold-specific changes in model log-odds relative to the indicated reference values, before recalibration. Histograms show the first outer training fold.",
+    "Figure S3": "Pooled held-out predictions. Average precision follows input legend order across both rows of values. Horizontal guides show outcome prevalence.",
+    "Figure S4": "Up to ten equal-frequency bins of pooled held-out predictions. Histograms show the distribution of predicted risk and insets show the lower AKI risk range.",
+    "Figure S5": f"Waveform-only models in the shared cohort. AP denotes average precision. {CI_NOTE}",
+    "Figure S6": f"Waveform-only models in the shared cohort. {CI_NOTE}",
+    "Figure S7": f"Within-cohort differences. P denotes preoperative inputs, W4 the original four waveforms, and W5 all five including EEG. {CI_NOTE}",
+    "Figure S8": "Whole-operation net benefit per 100 operations. Arrows mark treat-all values below the plotted range.",
+    "Figure S9": "Paired differences in whole-operation net benefit per 100 operations. Shading shows pointwise 95% patient-cluster intervals. P denotes preoperative inputs, W4 the original four waveforms, and W5 all five including EEG.",
+    "Figure S10": "Cases nearest the indicated percentiles of whole-operation combined-model risk. Contributions add to the intercept on the calibrated log-odds scale. Preoperative-only risks use separate fits.",
 }
 
 
@@ -93,10 +80,6 @@ def _within(path: Path, root: Path) -> Path:
         raise ValueError(f"EEG report path is outside its study: {path}")
     return path
 
-
-def _input_style(feature):
-    color_name, line = INPUT_STYLES[feature]
-    return {"color": style.color(color_name), "linestyle": line, "label": LABELS[feature]}
 
 
 def _scope_inputs(artifact_root, processed, scope):
@@ -202,10 +185,9 @@ def _attrition_sources(path, studies):
 def _save_figure(fig, out, label, source):
     stem = label.replace(" ", "_")
     if label in CAPTIONS:
-        save_report_figure_bundle(fig, out / stem, formats=("png",), close=False)
-        fig.suptitle(f"{label}. {TITLES[label]}", fontweight="bold", fontsize=11)
-        fig.supxlabel(textwrap.fill(CAPTIONS[label], width=110), fontsize=8, color=style.color("reference"))
-        save_report_figure_bundle(fig, out / stem, formats=("pdf",), close=True)
+        fig.savefig(out / f"{stem}.png", dpi=style.PNG_DPI, facecolor="white")
+        fig.savefig(out / f"{stem}.pdf", facecolor="white")
+        plt.close(fig)
     else:
         if fig.get_label():
             fig.suptitle(fig.get_label(), fontweight="bold", fontsize=11)
@@ -214,157 +196,48 @@ def _save_figure(fig, out, label, source):
 
 
 def _flow(attrition):
-    values, stages = [], []
+    labels = {"source": "VitalDB operations", "clinical": "Clinical eligibility",
+              "four_waveform_tracks": "Original four waveforms available", "eeg_track": "Raw EEG track available",
+              "eeg_qc": "Usable EEG signal", "eeg_features": "EEG features in both branches",
+              "both_branches": "Broader ICU analysis cohort"}
     previous = None
-    reasons = {"clinical": "Clinical eligibility", "original_waveform_track": "A required original track is unavailable",
-               "eeg_track": "Neither raw EEG track is listed", "eeg_source_or_qc": "EEG load, coverage or cleaning failed",
+    values, stages = [], []
+    reasons = {"clinical": "Clinical eligibility not met", "original_waveform_track": "Required original track unavailable",
+               "eeg_track": "No raw EEG track", "eeg_source_or_qc": "EEG load or quality check failed",
                "eeg_feature_extraction": "EEG feature extraction failed",
-               "original_modality_extraction": "An original waveform failed one or both branches"}
+               "original_modality_extraction": "Original waveform extraction failed"}
     for stage in attrition["stages"]:
         count, patients = stage["operations"], stage["patients"]
-        stages.append(CohortStage(title=stage["title"], count=count, n_patients=patients,
-                                  removed=None if previous is None else previous - count,
-                                  removal_reason=reasons.get(stage.get("first_exclusion"))))
         values.append({"stage": stage["key"], "operations": count, "patients": patients})
+        if stage["key"] != "eeg_features" or count != previous:
+            stages.append(CohortStage(title=labels[stage["key"]], count=count, n_patients=patients,
+                                      removed=None if previous is None else previous - count,
+                                      removal_reason=reasons.get(stage.get("first_exclusion"))))
         previous = count
-    fig = _draw_cohort_flow_fallback(stages, None, None, publication=True)
-    ax = fig.axes[0]
-    width, height = fig.get_size_inches()
-    fig.set_size_inches(width, height + 1.5)
-    ax.set_position([0, 1.5 / (height + 1.5), 1, height / (height + 1.5)])
-    for index, (scope, counts) in enumerate(attrition["scopes"].items()):
+    main = attrition["scopes"]["main_shared"]
+    broader = attrition["scopes"]["icu_waveform_sensitivity"]
+    stages.append(CohortStage(title="Shared AKI/ICU analysis cohort", count=main["operations"],
+                              n_patients=main["patients"], removed=broader["operations"] - main["operations"],
+                              removal_reason="AKI ascertainment unavailable"))
+    for scope, counts in attrition["scopes"].items():
         if scope not in SCOPES:
             continue
-        outcomes = []
         for outcome, record in counts["outcomes"].items():
-            outcomes.append(f"{OUTCOMES[outcome]} {record['positive_operations']:,}")
             values.append({"stage": scope, "outcome": outcome, "operations": counts["operations"],
                            "patients": counts["patients"], **record})
-        fig.text(.04, (.99 - .32 * index) / (height + 1.5),
-                 f"{SCOPES[scope][0]} · {counts['operations']:,} operations, {counts['patients']:,} patients · "
-                 + ", ".join(outcomes), fontsize=8)
+    def events(scope, outcome):
+        record = scope["outcomes"][outcome]
+        return f"{OUTCOMES[outcome]}: {record['positive_operations']:,} operations ({record['prevalence']:.1%})"
+
+    fig = cohort_flow_figure(stages, [events(main, outcome) for outcome in OUTCOMES],
+                             cohort_note=f"Broader ICU cohort · {events(broader, 'icu_admission')}")
     return fig, pd.DataFrame(values)
 
-
-def _descriptives(studies, processed, attrition):
-    source = pd.read_csv(_within(processed / "aki_pleth_ecg_co2_awp.csv", processed))
-    derived = pd.read_csv(_within(processed / "aki_preop_processed.csv", processed))
-    cohorts = {}
-    for scope, study in studies.items():
-        roster = Path(study["manifest"]["branch_rosters"]["non_windowed"]["path"])
-        cohort = _restrict_to_roster(source, roster)
-        additions = _restrict_to_roster(derived, roster)
-        added = [col for col in (*CONTINUOUS_COLS, "inpatient_preop") if col in additions and col not in cohort]
-        cohorts[scope] = cohort.merge(additions[["caseid", *added]], on="caseid", validate="one_to_one", how="left")
-    shared, broader = (cohorts[scope] for scope in SCOPES)
-    if not set(shared.caseid).issubset(broader.caseid):
-        raise ValueError("The broader ICU roster must include the shared EEG roster")
-    table = _build_descriptive_table(
-        shared, None, continuous_features=[col for col in CONTINUOUS_COLS if col in shared],
-        categorical_features=[col for col in (*CATEGORICAL_COLS, "inpatient_preop") if col in shared],
-        display_dictionary=load_display_dictionary(), alpha=.05, max_sample=5000, random_state=42,
-    ).drop(columns="Type")
-    table.columns = ["Characteristic", "Finding", "Missing n (%)"]
-    rows = []
-    for scope, cohort in cohorts.items():
-        data = attrition["scopes"][scope]
-        row = {"Cohort": SCOPES[scope][0], "Operations": data["operations"], "Patients": data["patients"]}
-        for outcome in OUTCOMES:
-            counts = data["outcomes"].get(outcome)
-            row[OUTCOMES[outcome] + " positive operations"] = counts["positive_operations"] if counts else "—"
-            row[OUTCOMES[outcome] + " positive patients"] = counts["positive_patients"] if counts else "—"
-            row[OUTCOMES[outcome] + " prevalence"] = f"{counts['positive_operations'] / data['operations']:.1%}" if counts else "—"
-        row.update(_cohort_characteristics(cohort))
-        rows.append(row)
-    return table, pd.DataFrame(rows).set_index("Cohort").T.rename_axis("Characteristic").reset_index()
-
-
-def _cohort_characteristics(frame):
-    duration = (pd.to_numeric(frame.opend, errors="coerce") - pd.to_numeric(frame.opstart, errors="coerce")) / 60
-    numeric = {"Age, years": frame.age, "BMI, kg/m²": frame.bmi, "Operative duration, min": duration,
-               "Baseline creatinine, mg/dL": frame.preop_cr}
-    categories = {
-        "Male sex": frame.sex.eq("M"), "Emergency surgery": frame.emop.eq(1),
-        "ASA-PS III–IV": frame.asa.isin([3, 4]), "Open surgical approach": frame.approach.eq("Open"),
-        "Colorectal procedure": frame.optype.eq("Colorectal"), "Transplantation": frame.optype.eq("Transplantation"),
-        "Hypertension": frame.preop_htn.eq(1), "Diabetes": frame.preop_dm.eq(1),
-        "Baseline creatinine absent or invalid": ~frame.aki_has_baseline_cr.eq(1),
-        "Baseline creatinine >4 mg/dL": pd.to_numeric(frame.preop_cr, errors="coerce").gt(4),
-        "No finite positive postoperative creatinine within 72 h": ~frame.aki_has_postop_cr_72h.eq(1),
-        "AKI ascertainment unavailable": ~frame.eligible_any_aki.eq(1),
-        "C-reactive protein unavailable": ~np.isfinite(pd.to_numeric(frame.preop_crp, errors="coerce")),
-    }
-    return {**{key: _summarize_continuous(values)[0] for key, values in numeric.items()},
-            **{key: f"{values.sum():,} ({values.sum() / len(frame):.1%})" for key, values in categories.items()}}
-
-
-def _performance(metrics):
-    rows = []
-    for outcome in OUTCOMES:
-        for family in FAMILIES:
-            for branch in BRANCHES:
-                for feature in EEG_CORE:
-                    rows.extend(metrics.loc[metrics.outcome.eq(outcome) & metrics.model_type.eq(family)
-                                           & metrics.branch.eq(branch) & metrics.feature_set.eq(feature)].to_dict("records"))
-    source = pd.DataFrame(rows)
-    output = pd.DataFrame({"Outcome": source.outcome.map(OUTCOMES),
-                           "Model": source.model_type.map({k: v[0] for k, v in FAMILIES.items()}),
-                           "Branch": source.branch.map(BRANCHES), "Input": source.feature_set.map(LABELS)})
-    for metric, label in METRIC_LABELS.items():
-        output[label] = [f"{value:.3f} ({lower:.3f}–{upper:.3f})" for value, lower, upper in
-                         source[[metric, f"{metric}_lower", f"{metric}_upper"]].itertuples(index=False, name=None)]
-    return output, source
-
-
-def _descriptor_table(extractor_version: str) -> pd.DataFrame:
-    if extractor_version == "0.4.5":
-        descriptors = pd.DataFrame(DESCRIPTORS.items(), columns=["Catch24 descriptor", "Description"])
-    else:
-        import pycatch22
-
-        installed = version("pycatch22")
-        if installed != extractor_version or not hasattr(pycatch22, "feature_table"):
-            raise ValueError(
-                f"EEG descriptor definitions require the frozen pycatch22 {extractor_version} build. "
-                f"Installed version is {installed}."
-            )
-        table = pycatch22.feature_table(catch24=True)
-        descriptors = pd.DataFrame(
-            ((row["name"], row["hctsa_call"]) for row in table),
-            columns=["Catch24 descriptor", "hctsa reference call"],
-        )
-    if len(descriptors) != 24 or not descriptors["Catch24 descriptor"].is_unique:
-        raise ValueError(f"Invalid Catch24 definitions for pycatch22 {extractor_version}.")
-    descriptors.attrs["pycatch22_version"] = extractor_version
-    return descriptors
-
-
-def _predictor_tables(study, *, extractor_version: str):
-    ps = study["predictions"][("ebm", "any_aki", "non_windowed", "preop_only")]
-    import joblib
-    fold_dir = ps.path.parent.parent / "artifacts/folds/repeat_00/outer_00"
-    pre = joblib.load(_within(fold_dir / "preprocessor.pkl", study["root"]))
-    labels = load_display_dictionary()
-    clinical = []
-    for keys, kind in ((pre.categorical_columns_, "Categorical"), (pre.numeric_columns_, "Numeric")):
-        for key in sorted(keys):
-            clinical.append({"Clinical predictor": labels.feature_label(key, include_unit=True), "Input": key, "Encoding": kind})
-    channels = [(key, *value) for key, value in CHANNEL_SPECS.items()]
-    channels.append(("BIS_EEG1_WAV", "Frontal EEG (EEG)", "BIS/EEG1_WAV with BIS/EEG2_WAV load fallback",
-                     "128 Hz", "0.5–50 Hz band-pass"))
-    waveform = pd.DataFrame(channels, columns=["Prefix", "Waveform", "Source", "Native rate", "Filter"])
-    waveform["Whole-operation rate"] = ["10 Hz"] * 4 + ["128 Hz"]
-    waveform["Windowed rate"] = ["100 Hz", "100 Hz", "62.5 Hz", "62.5 Hz", "128 Hz"]
-    return (pd.DataFrame(clinical), waveform, _descriptor_table(extractor_version))
 
 
 def _axes(rows, cols=3, *, height=2.15):
     return plt.subplots(rows, cols, squeeze=False, figsize=(7.8, height * rows + .55), layout="constrained")
 
-
-def _core_legend(fig, ax, columns=2):
-    handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, ncol=columns, loc="outside lower center", fontsize=7)
 
 
 def _curve_tables(study):
@@ -393,139 +266,6 @@ def _curve_tables(study):
                                                      "bin_upper": edges[1:], "bin_n": counts}))
     return {key: pd.concat(frames, ignore_index=True) for key, frames in sources.items()}
 
-
-def _discrimination(curves, branch, kind):
-    selected = curves[kind].loc[lambda df: df.branch.eq(branch) & df.feature_set.isin(EEG_CORE)].copy()
-    support = curves["risk_support"].loc[lambda df: df.branch.eq(branch) & df.feature_set.isin(EEG_CORE)]
-    outcomes = [outcome for outcome in OUTCOMES if outcome in set(selected.outcome)]
-    fig, axes = _axes(len(outcomes), height=3.2 if kind == "calibration" else 2.5)
-    for i, outcome in enumerate(outcomes):
-        for j, (family, (short, _)) in enumerate(FAMILIES.items()):
-            ax = axes[i, j]
-            frame = selected[selected.outcome.eq(outcome) & selected.model_type.eq(family)]
-            for feature in EEG_CORE:
-                rows = frame[frame.feature_set.eq(feature)]
-                line = _input_style(feature)
-                if kind == "calibration":
-                    ax.plot(rows.x, rows.y, marker="o", markersize=2.2, **line)
-                    histogram = support[support.outcome.eq(outcome) & support.model_type.eq(family)
-                                        & support.feature_set.eq(feature)]
-                    inset = ax.inset_axes([.56, .06, .42, .28]) if feature == EEG_CORE[0] else inset
-                    inset.stairs(histogram.bin_n, np.r_[histogram.bin_lower, histogram.bin_upper.iloc[-1]], **line)
-                    inset.set(xticks=[0, 1], yticks=[], title="Risk distribution")
-                    inset.tick_params(axis="x", labelsize=6)
-                    inset.title.set_fontsize(6)
-                else:
-                    ax.plot(rows.x, rows.y, **line)
-            if kind == "pr":
-                ax.axhline(frame.prevalence.iloc[0], color=style.color("reference"), ls="--", lw=.65)
-                xlabel, ylabel = "Recall", "Precision"
-            elif kind == "roc":
-                ax.plot([0, 1], [0, 1], color=style.color("reference"), ls="--", lw=.65)
-                xlabel, ylabel = "False positive rate", "True positive rate"
-            else:
-                ax.plot([0, 1], [0, 1], color=style.color("reference"), ls="--", lw=.65)
-                xlabel, ylabel = "Predicted risk", "Observed risk"
-            ax.set(title=f"{OUTCOMES[outcome]} · {short}", xlim=(0, 1), ylim=(0, 1),
-                   xticks=[0, .5, 1], yticks=[0, .5, 1], xlabel=xlabel, ylabel=ylabel if j == 0 else "")
-    _core_legend(fig, axes[0, 0])
-    return fig, selected
-
-
-def _contrast(studies, *, icu_only):
-    pairs = (*EEG_BASELINE_PAIRS, *EEG_INCREMENT_PAIRS)
-    pairs_label = ("P + W4 − P", "P + W5 − P", "(P + W5) − (P + W4)", "W5 − W4")
-    frames = []
-    for study in studies.values():
-        table = study["comparisons"]["paired"]
-        table = table[table.reference_model.eq(table.candidate_model) & table.metric.isin(["auprc", "auroc"])]
-        if icu_only:
-            table = table[table.outcome.eq("icu_admission")]
-        for index, ((reference, candidate), label) in enumerate(zip(pairs, pairs_label, strict=True)):
-            frames.append(table[table.reference_feature_set.eq(reference) & table.candidate_feature_set.eq(candidate)]
-                          .assign(contrast=label, contrast_order=index))
-    data = pd.concat(frames, ignore_index=True)
-    row_key = "cohort_scope" if icu_only else "outcome"
-    groups = list(data.groupby(row_key, sort=False))
-    fig, axes = _axes(len(groups), 2, height=3.1)
-    for i, (key, group) in enumerate(groups):
-        for j, metric in enumerate(("auprc", "auroc")):
-            ax = axes[i, j]
-            for row in group[group.metric.eq(metric)].itertuples():
-                family_offset = (list(FAMILIES).index(row.candidate_model) - 1) * .2
-                branch_offset = -.045 if row.branch == "non_windowed" else .045
-                y = row.contrast_order + family_offset + branch_offset
-                ink = style.FAMILY_COLORS[row.candidate_model]
-                marker = "o" if row.branch == "non_windowed" else "s"
-                ax.hlines(y, row.lower, row.upper, color=ink, linewidth=.75)
-                ax.plot(row.delta, y, marker=marker, ms=3, color=ink, mfc=ink if marker == "o" else "white")
-            ax.axvline(0, color=style.color("reference"), ls="--", lw=.65)
-            ax.set(yticks=range(len(pairs)), yticklabels=pairs_label, ylim=(len(pairs) - .6, -.4),
-                   title=f"{SCOPES[key][0] if icu_only else OUTCOMES[key]} · Δ{METRIC_LABELS[metric]}")
-    proxies = [plt.Line2D([], [], color=style.FAMILY_COLORS[family], label=name[0]) for family, name in FAMILIES.items()]
-    proxies.extend([plt.Line2D([], [], color="#222222", ls="none", marker=marker, label=name)
-                    for marker, name in (("o", "Whole-operation"), ("s", "Windowed"))])
-    fig.legend(handles=proxies, loc="outside lower center", ncol=5, fontsize=7)
-    return fig, data
-
-
-def _channels(studies, metric):
-    data = pd.concat([study["metrics"] for study in studies.values()], ignore_index=True)
-    selected = data[data.feature_set.isin(CHANNELS)].copy()
-    groups = list(selected.groupby(["cohort_scope", "outcome"], sort=False))
-    fig, axes = _axes(len(groups), len(BRANCHES), height=2.35)
-    for i, ((scope, outcome), frame) in enumerate(groups):
-        for j, (branch, branch_name) in enumerate(BRANCHES.items()):
-            ax = axes[i, j]
-            for row in frame[frame.branch.eq(branch)].itertuples():
-                y = CHANNELS.index(row.feature_set) + (list(FAMILIES).index(row.model_type) - 1) * .22
-                ink = style.FAMILY_COLORS[row.model_type]
-                ax.hlines(y, getattr(row, f"{metric}_lower"), getattr(row, f"{metric}_upper"), color=ink, linewidth=.7)
-                ax.plot(getattr(row, metric), y, marker="o", ms=3, color=ink)
-            ax.set(yticks=range(len(CHANNELS)), yticklabels=[LABELS[key] for key in CHANNELS],
-                   ylim=(len(CHANNELS) - .6, -.4), title=f"{SCOPES[scope][0]} · {OUTCOMES[outcome]}\n{branch_name}")
-    fig.legend(handles=[plt.Line2D([], [], color=style.FAMILY_COLORS[family], label=name[0])
-                        for family, name in FAMILIES.items()], loc="outside lower center", ncol=3, fontsize=7)
-    return fig, selected
-
-
-def _dca(study, branch, *, paired):
-    key = "dca_comparisons" if paired else "dca"
-    table = study["comparisons"][key]
-    table = table[table.branch.eq(branch)]
-    if paired:
-        pairs = (EEG_BASELINE_PAIRS[-1], EEG_INCREMENT_PAIRS[0])
-        frames = []
-        for (ref, candidate), text in zip(pairs, ("P + W5 − P", "(P + W5) − (P + W4)"), strict=True):
-            frames.append(table[table.reference_model.eq(table.candidate_model) & table.reference_feature_set.eq(ref)
-                                & table.candidate_feature_set.eq(candidate)].assign(contrast=text))
-        table = pd.concat(frames, ignore_index=True)
-    else:
-        table = table[table.feature_set.isin(EEG_CORE)]
-    outcomes = [outcome for outcome in OUTCOMES if outcome in set(table.outcome)]
-    fig, axes = _axes(len(outcomes), height=2.55)
-    for i, outcome in enumerate(outcomes):
-        for j, (family, (name, _)) in enumerate(FAMILIES.items()):
-            ax = axes[i, j]
-            model_key = "candidate_model" if paired else "model_type"
-            selected = table[table.outcome.eq(outcome) & table[model_key].eq(family)]
-            if paired:
-                for k, (contrast, rows) in enumerate(selected.groupby("contrast", sort=False)):
-                    ink = style.color(("blue", "green")[k])
-                    rows = rows.sort_values("threshold_probability")
-                    ax.plot(rows.threshold_probability, rows.delta, color=ink, label=contrast)
-                    ax.fill_between(rows.threshold_probability, rows.lower, rows.upper, color=ink, alpha=.16)
-                ax.axhline(0, color=style.color("reference"), lw=.75)
-            else:
-                for feature in EEG_CORE:
-                    rows = selected[selected.feature_set.eq(feature)].sort_values("threshold_probability")
-                    ax.plot(rows.threshold_probability, rows.model, **_input_style(feature))
-                ax.plot(rows.threshold_probability, rows.treat_all, color=style.color("reference"), ls="--", label="Treat all")
-                ax.axhline(0, color=style.color("ink"), lw=.75, label="Treat none")
-            ax.set(title=f"{OUTCOMES[outcome]} · {name}", xlabel="Threshold probability",
-                   ylabel=("Δ net benefit" if paired else "Net benefit") if j == 0 else "")
-    _core_legend(fig, axes[0, 0])
-    return fig, table
 
 
 def _ablation(studies):
@@ -564,85 +304,71 @@ def _ablation_figure(ablations, *, scope):
     return fig, source
 
 
-def _table_sections(label, frames):
-    title = f"{label}. {TITLES[label]}"
-    headings = {
-        "Table S1": ("Clinical inputs", "Waveform inputs", "Catch24 descriptors"),
-    }.get(label, (title,) * len(frames))
-    notes = {
-        "Table 1": TABLE_FOOTNOTE, "Table 2": CI_NOTE,
-        "Table S1": "All-five inputs yield 120 whole-operation or 480 windowed waveform features. "
-        "EEG masks missing samples, unknown or low SQI, and raw amplitudes outside ±100 µV over the full operative grid. "
-        "The union may cover at most 5% of samples. SQI must be at least 50, using a bounded prior observation. "
-        "Linear interpolation and nearest endpoint fill precede forward/backward SOS filtering (design N=4). "
-        "A 10-second EEG window advances by 5 seconds. "
-        "Each descriptor is summarized by mean, sample SD, minimum and maximum.",
-        "Table S2": "The cohorts overlap. Positive patients had at least one positive operation.",
-    }
-    if label == "Table S1" and (extractor_version := frames[-1].attrs.get("pycatch22_version")):
-        notes[label] = f"Waveform descriptors use pycatch22 {extractor_version}. {notes[label]}"
-    return [{"heading": heading, "dataframe": frame, "notes": notes[label] if i == len(frames) - 1 else None}
-            for i, (heading, frame) in enumerate(zip(headings, frames, strict=True))]
+
+def _pdf_renderer():
+    command = os.environ.get("AKI_EEG_SOFFICE", "soffice")
+    if executable := shutil.which(command):
+        return executable
+    raise RuntimeError("LibreOffice Writer is required for manuscript-layout PDF proofs. Set AKI_EEG_SOFFICE to its executable.")
 
 
-def _books(out, tables):
-    pdfunite = shutil.which("pdfunite")
-    if not pdfunite:
-        raise RuntimeError("Poppler pdfunite is required to assemble the EEG vector PDF books")
-    widths = {"Table 1": ((3.3, 2.2, 1.55),), "Table 2": ((.6, .6, 1.15, 1.6, 1.05, 1.05, 1.0),),
-              "Table S1": ((2.9, 2.7, 1.45), (1.0, 1.1, 1.55, .8, .85, .9, .85), (3.3, 3.75)),
-              "Table S2": ((4.05, 1.5, 1.5),)}
+def _books(out, tables, *, pdf_renderer=None):
+    pdf_renderer = pdf_renderer or _pdf_renderer()
     books = {}
-    for inventory, stem in ((MAIN, "Main_Figures_and_Tables"), (SUPPLEMENT, "Supplementary_Figures_and_Tables")):
-        doc = document(stem.replace("_", " "))
-        pdfs, image_labels, table_count = [], [], 0
-        for index, label in enumerate(inventory):
-            title = f"{label}. {TITLES[label]}"
-            heading(doc, title, page_break=index > 0)
-            file_stem = label.replace(" ", "_")
-            if label in tables:
-                sections = _table_sections(label, tables[label])
-                for section, column_widths in zip(sections, widths[label], strict=True):
-                    if section["heading"] != title:
-                        heading(doc, section["heading"])
-                    add_frame(doc, section["dataframe"], column_widths)
-                    table_count += 1
-                    if section.get("notes"):
-                        note(doc, section["notes"])
-                path = out / f"{file_stem}.pdf"
-                write_pdf_sections(path, title=title, sections=sections)
-                pdfs.append(path)
-            else:
-                p = doc.add_paragraph()
-                p.paragraph_format.keep_with_next = True
-                image_path = out / f"{file_stem}.png"
-                with Image.open(image_path) as raster:
-                    placed_width = min(6.4, .999 * raster.width / style.PNG_DPI)
-                image = p.add_run().add_picture(str(image_path), width=Inches(placed_width))
-                if image.height.inches > 8.7:
-                    ratio = 8.7 / image.height.inches
-                    image.width, image.height = round(image.width * ratio), round(image.height * ratio)
-                note(doc, CAPTIONS[label])
-                image_labels.append(label)
-                pdfs.append(out / f"{file_stem}.pdf")
-        doc_path, pdf_path = out / f"{stem}.docx", out / f"{stem}.pdf"
-        doc.save(doc_path)
-        subprocess.run([pdfunite, *map(str, pdfs), str(pdf_path)], check=True)
-        check = Document(doc_path)
-        titles = [p.text for p in check.paragraphs if p.text in {f"{label}. {TITLES[label]}" for label in inventory}]
-        if titles != [f"{label}. {TITLES[label]}" for label in inventory] or (
-            len(check.inline_shapes), len(check.tables)
-        ) != (len(image_labels), table_count):
-            raise ValueError(f"Incomplete EEG display book: {doc_path}")
-        placement = {}
-        for label, shape in zip(image_labels, check.inline_shapes, strict=True):
-            image = check.part.related_parts[shape._inline.graphic.graphicData.pic.blipFill.blip.embed].image
-            dpi = min(image.px_width / shape.width.inches, image.px_height / shape.height.inches)
-            if dpi + .001 < style.PNG_DPI:
-                raise ValueError(f"EEG Word artwork for {label} is below {style.PNG_DPI} effective dpi")
-            placement[label] = round(dpi, 2)
-        books[stem] = {"displays": inventory, "placed_dpi": placement, "tables": table_count,
-                       "docx": file_sha256(doc_path), "pdf": file_sha256(pdf_path)}
+    with tempfile.TemporaryDirectory(prefix="eeg-word-proofs-") as temporary:
+        staging = Path(temporary)
+        proof_sources = []
+        for inventory, stem in ((MAIN, "Main_Figures_and_Tables"), (SUPPLEMENT, "Supplementary_Figures_and_Tables")):
+            doc = document(stem.replace("_", " "))
+            figure_labels, table_count = [], 0
+            for index, label in enumerate(inventory):
+                title = f"{label}. {TITLES[label]}"
+                file_stem = label.replace(" ", "_")
+                if label in tables:
+                    heading(doc, title, page_break=index > 0)
+                    table_count += add_table_display(doc, label, tables[label])
+                    table_doc = document(title)
+                    heading(table_doc, title)
+                    add_table_display(table_doc, label, tables[label])
+                    proof_sources.append(staging / f"{file_stem}.docx")
+                    table_doc.save(proof_sources[-1])
+                else:
+                    image_path = out / f"{file_stem}.png"
+                    with Image.open(image_path) as raster:
+                        width = min(6.35 if label == "Figure S10" else 6.85, raster.width / style.PNG_DPI,
+                                    8.65 * raster.width / raster.height)
+                    add_image(doc, label, image_path, CAPTIONS[label], page_break=index > 0, width=width)
+                    figure_labels.append(label)
+            doc_path = out / f"{stem}.docx"
+            doc.save(doc_path)
+            proof_sources.append(doc_path)
+            check = Document(doc_path)
+            expected = [f"{label}. {TITLES[label]}" for label in inventory]
+            titles = [p.text for p in check.paragraphs if p.text in expected]
+            if titles != expected or (len(check.inline_shapes), len(check.tables)) != (len(figure_labels), table_count):
+                raise ValueError(f"Incomplete EEG display book: {doc_path}")
+            placement = {}
+            for label, shape in zip(figure_labels, check.inline_shapes, strict=True):
+                image = check.part.related_parts[shape._inline.graphic.graphicData.pic.blipFill.blip.embed].image
+                dpi = min(image.px_width / shape.width.inches, image.px_height / shape.height.inches)
+                if dpi + .001 < style.PNG_DPI:
+                    raise ValueError(f"EEG Word artwork for {label} is below {style.PNG_DPI} effective dpi")
+                placement[label] = round(dpi, 2)
+            books[stem] = {"displays": inventory, "placed_dpi": placement, "tables": table_count,
+                           "docx": file_sha256(doc_path)}
+
+        # The final manuscript PDFs were exported from the editable Word layout.
+        export_filter = ('pdf:writer_pdf_Export:{"UseLosslessCompression":{"type":"boolean","value":"true"},'
+                         '"ReduceImageResolution":{"type":"boolean","value":"false"}}')
+        proc = subprocess.run([pdf_renderer, f"-env:UserInstallation={(staging / 'profile').as_uri()}", "--headless",
+                               "--convert-to", export_filter, "--outdir", str(out), *map(str, proof_sources)],
+                              capture_output=True, text=True, timeout=180)
+        missing = [path.stem for path in proof_sources if not (out / f"{path.stem}.pdf").is_file()]
+        if proc.returncode or missing:
+            raise RuntimeError(f"LibreOffice PDF export failed ({proc.returncode}, missing {missing}). "
+                               f"{proc.stdout[-1000:]}\n{proc.stderr[-3000:]}")
+    for stem, book in books.items():
+        book["pdf"] = file_sha256(out / f"{stem}.pdf")
     return books
 
 
@@ -779,8 +505,11 @@ def _fold_worker_count(requested: int | None) -> int:
 
 
 def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | None = None) -> Path:
-    from reporting.eeg_explanations import explanation_sources, heldout_figure, importance_figure, response_figure
+    from reporting.eeg_manuscript_explanations import (
+        heldout_figure, importance_figure, manuscript_explanation_sources, manuscript_response_support, response_figure,
+    )
 
+    pdf_renderer = _pdf_renderer()
     fold_workers = _fold_worker_count(fold_workers)
     artifact_root = artifact_root.resolve()
     processed = _within(processed, artifact_root)
@@ -796,9 +525,10 @@ def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | No
         raise ValueError("EEG reporting requires the split and feature plan recorded in both run manifests")
     pilot = _within(artifact_root / "pilot/protocol_freeze.json", artifact_root)
     protocol = json.loads(pilot.read_text())["protocol"]
-    table_1, table_s2 = _descriptives(studies, processed, attrition)
-    table_2, performance = _performance(shared["metrics"])
-    table_s1 = _predictor_tables(shared, extractor_version=protocol["versions"]["pycatch22"])
+    raw = get_raw_dir(Path(__file__).resolve().parents[1])
+    table_1, table_s2 = descriptive_tables(studies, processed, attrition)
+    table_2, performance = performance_table(shared, artifact_root=artifact_root)
+    table_s1 = predictor_tables(shared, extractor_version=protocol["versions"]["pycatch22"], raw=raw)
     output.mkdir(parents=True, exist_ok=True)
     fold_fingerprint = _fold_export_fingerprint()
     fold_caches = _published_fold_cache(output, fold_fingerprint)
@@ -818,20 +548,20 @@ def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | No
         _save_figure(*_figure_args(_contrast({"main_shared": shared}, icu_only=False), out, "Figure 2"))
         _save_figure(*_figure_args(_contrast(studies, icu_only=True), out, "Figure S7"))
         for label, metric in (("Figure S5", "auprc"), ("Figure S6", "auroc")):
-            _save_figure(*_figure_args(_channels(studies, metric), out, label))
+            _save_figure(*_figure_args(_channels(shared, metric), out, label))
         curves = _curve_tables(shared)
         for label, kind in (("Figure 3", "roc"), ("Figure S3", "pr"), ("Figure S4", "calibration")):
             _save_figure(*_figure_args(_discrimination(curves, "non_windowed", kind), out, label))
-        curves["risk_support"].loc[lambda df: df.branch.eq("non_windowed") & df.feature_set.isin(EEG_CORE)].to_csv(
+        curves["risk_support"].loc[lambda df: df.branch.eq("non_windowed") & df.feature_set.isin(CALIBRATION_INPUTS)].to_csv(
             out / "Figure_S4.risk_support.csv", index=False,
         )
         for label, paired in (("Figure S8", False), ("Figure S9", True)):
             _save_figure(*_figure_args(_dca(shared, "non_windowed", paired=paired), out, label))
-        explanations = explanation_sources(shared, "non_windowed")
+        explanations = manuscript_explanation_sources(shared, "non_windowed")
         for label, build in (("Figure 4", importance_figure), ("Figure 5", response_figure),
                              ("Figure S10", heldout_figure)):
             _save_figure(*_figure_args(build(explanations), out, label))
-        explanations["support"].to_csv(out / "Figure_5.training_support.csv", index=False)
+        manuscript_response_support(explanations).to_csv(out / "Figure_5.training_support.csv", index=False)
         explanations["case_ledger"].to_csv(out / "Figure_S10.case_ledger.csv", index=False)
         explanations["case_terms"].to_csv(out / "Figure_S10.case_terms.csv", index=False)
         ablations = _ablation(studies)
@@ -840,16 +570,23 @@ def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | No
             companion = out / "companion" / scope
             _write_scope_assets(study, companion, scope, fold_workers=fold_workers,
                                 fold_cache=fold_caches.get(scope), curves=curves if scope == "main_shared" else None,
-                                whole_explanations=explanations if scope == "main_shared" else None)
+                                whole_explanations=({key: value for key, value in explanations.items() if not key.startswith("manuscript_")}
+                                                    if scope == "main_shared" else None))
             _save_figure(*_figure_args(_ablation_figure(ablations, scope=scope), companion, "ablation_ap"))
-        books = _books(out, tables)
+            if scope == "icu_waveform_sensitivity":
+                for metric in ("auprc", "auroc"):
+                    _save_figure(*_figure_args(_channels(study, metric), companion, f"channel_{metric}"))
+        books = _books(out, tables, pdf_renderer=pdf_renderer)
         ledger = {"study_profile": "eeg", "books": books, "style_sha256": style.STYLE_SHA256,
+                  "display_layout": "manuscript-revision",
                   "eeg_protocol": protocol, "split_preflight_sha256": gate_sha,
                   "fold_export_fingerprint": fold_fingerprint,
                   "delta_convention": "Candidate minus reference. Lower Brier scores indicate better performance.",
                   "intervals": "Patient-cluster percentile intervals conditional on saved fits. Ablations are nominal and exploratory.",
                   "descriptive_sources": {str(processed / name): file_sha256(processed / name)
-                                          for name in ("aki_pleth_ecg_co2_awp.csv", "aki_preop_processed.csv")},
+                                          for name in COHORT_SOURCES},
+                  "predictor_dictionary_sources": {str(raw / name): file_sha256(raw / name)
+                                                   for name in PREDICTOR_DICTIONARIES},
                   "displays": {label: {"title": TITLES[label], "files": sorted(p.name for p in out.glob(
                       f"{label.replace(' ', '_')}.*" if label.startswith("Figure") else f"{label.replace(' ', '_')}*"))}
                       for label in (*MAIN, *SUPPLEMENT)},

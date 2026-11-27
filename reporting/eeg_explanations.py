@@ -114,10 +114,9 @@ def _inputs(preprocessor):
     return [*preprocessor.numeric_columns_, *preprocessor.categorical_columns_]
 
 
-def _fold_responses(loaded, lookup, names):
+def _fold_responses(loaded, train_inputs, names, *, quantiles=None, limit=2):
     responses, support = [], []
-    train_inputs = [pre.transform(lookup.loc[training.caseid, _inputs(pre)])
-                    for pre, _, training, _, _ in loaded]
+    quantiles = quantiles or {}
     for feature in names:
         observed = []
         for training in train_inputs:
@@ -125,7 +124,8 @@ def _fold_responses(loaded, lookup, names):
             observed.append(values[np.isfinite(values)])
         if not all(len(values) >= 2 and np.ptp(values) > 0 for values in observed):
             continue
-        lo, reference, hi = np.median([np.quantile(values, [.05, .5, .95]) for values in observed], axis=0)
+        lower, upper = quantiles.get(feature, (.05, .95))
+        lo, reference, hi = np.median([np.quantile(values, [lower, .5, upper]) for values in observed], axis=0)
         if not lo < reference < hi:
             continue
         for bundle, values in zip(loaded, observed, strict=True):
@@ -143,7 +143,7 @@ def _fold_responses(loaded, lookup, names):
             responses.append(pd.DataFrame({**context, "value": x, "raw_log_odds_minus_reference": scores}))
             counts, edges = np.histogram(values, bins=np.linspace(lo, hi, 26))
             support.append(pd.DataFrame({**context, "bin_lower": edges[:-1], "bin_upper": edges[1:], "count": counts}))
-        if len({frame.feature.iloc[0] for frame in responses}) >= 2:
+        if len(responses) >= limit * len(loaded):
             break
     return responses, support
 
@@ -204,11 +204,12 @@ def _case_explanation(bundle, case_id, lookup):
     return common, term_table, plotted
 
 
-def explanation_sources(study, branch):
+def explanation_sources(study, branch, *, manuscript_ranges=None):
     raw = _read_modeling_matrix(study["matrix_paths"][branch])
     lookup = raw.set_index("caseid")
     outcomes = [outcome for outcome in OUTCOMES if ("ebm", outcome, branch, "preop_and_all_five") in study["predictions"]]
     importance, responses, supports, ledger, terms, contributions = [], [], [], [], [], []
+    manuscript_responses, manuscript_support = [], []
     for outcome in outcomes:
         ps = study["predictions"][("ebm", outcome, branch, "preop_and_all_five")]
         keys = sorted(set(zip(ps.df.repeat_id, ps.df.outer_fold_id)))
@@ -233,9 +234,20 @@ def explanation_sources(study, branch):
         importance.append(scores)
         common_numerics = set.intersection(*(set(pre.numeric_columns_) for pre, *_ in loaded))
         names = [name for name in means.feature if name in common_numerics and all(name in model.term_names_ for _, model, *_ in loaded)]
-        curves, support = _fold_responses(loaded, lookup, names)
+        train_inputs = [pre.transform(lookup.loc[training.caseid, _inputs(pre)])
+                        for pre, _, training, _, _ in loaded]
+        curves, support = _fold_responses(loaded, train_inputs, names)
         responses.extend(frame.assign(**metadata) for frame in curves)
         supports.extend(frame.assign(**metadata) for frame in support)
+        ranges = manuscript_ranges.get(outcome, {}) if manuscript_ranges is not None else {}
+        if ranges:
+            if not set(ranges).issubset(names):
+                raise ValueError(f"Missing fitted numeric terms for {outcome}: {sorted(set(ranges).difference(names))}")
+            curves, support = _fold_responses(loaded, train_inputs, ranges, quantiles=ranges, limit=len(ranges))
+            if len(curves) != len(ranges) * len(keys):
+                raise ValueError(f"Incomplete outer-training support for {outcome} manuscript responses")
+            manuscript_responses.extend(frame.assign(**metadata) for frame in curves)
+            manuscript_support.extend(frame.assign(**metadata) for frame in support)
         baseline = study["predictions"][("ebm", outcome, branch, "preop_only")].df.set_index("caseid")
         predictions = ps.df.set_index("caseid")
         for quantile, target, caseid in _chosen_cases(ps.df):
@@ -248,14 +260,20 @@ def explanation_sources(study, branch):
             terms.append(table.assign(**common))
             position = common["calibrated_intercept"]
             for group, value in plotted.items():
-                contributions.append({**common, "group": group, "contribution": value, "start": position,
-                                      "end": position + value})
+                record = {**common, "group": group, "contribution": value, "start": position, "end": position + value}
+                if manuscript_ranges is not None:
+                    record["raw_group_value"] = lookup.at[caseid, group] if group in lookup.columns else None
+                contributions.append(record)
                 position += value
-    return {"importance": pd.concat(importance, ignore_index=True),
-            "responses": pd.concat(responses, ignore_index=True) if responses else pd.DataFrame(),
-            "support": pd.concat(supports, ignore_index=True) if supports else pd.DataFrame(),
-            "case_ledger": pd.DataFrame(ledger), "case_terms": pd.concat(terms, ignore_index=True),
-            "case_contributions": pd.DataFrame(contributions)}
+    sources = {"importance": pd.concat(importance, ignore_index=True),
+               "responses": pd.concat(responses, ignore_index=True) if responses else pd.DataFrame(),
+               "support": pd.concat(supports, ignore_index=True) if supports else pd.DataFrame(),
+               "case_ledger": pd.DataFrame(ledger), "case_terms": pd.concat(terms, ignore_index=True),
+               "case_contributions": pd.DataFrame(contributions)}
+    if manuscript_ranges is not None:
+        sources["manuscript_responses"] = pd.concat(manuscript_responses, ignore_index=True)
+        sources["manuscript_support"] = pd.concat(manuscript_support, ignore_index=True)
+    return sources
 
 
 def _label(feature):

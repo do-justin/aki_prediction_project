@@ -7,19 +7,20 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch,Rectangle
+from matplotlib.patches import Rectangle
 from matplotlib.ticker import MaxNLocator,FixedLocator
 import numpy as np
 import pandas as pd
 from PIL import Image,ImageOps,ImageDraw
+if Path(__file__).with_name('explanation_figures.py').is_file():
+ from explanation_figures import response_figure,term_importance_figure
+else:
+ from reporting.manuscript_workspace.explanation_figures import response_figure,term_importance_figure
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'03_FIGURES/narrative_revision'
 QA=OUT/'qa'
 MM=1/25.4
 BLUE,ORANGE,GREEN=(ps.INPUT_COLORS[key] for key in ('preop_only','all_waveforms','preop_and_all_waveforms'))
-FOLD_COLORS=ps.FOLD_COLORS
-FOLD_STYLES=ps.FOLD_STYLES
-FOLD_MARKERS=ps.FOLD_MARKERS
 OUTCOMES=[('any_aki','AKI'),('icu_admission','ICU admission')]
 FAMILIES=[('Logistic regression','LR'),('XGBoost','XGBoost'),('EBM','EBM')]
 SOURCES={
@@ -40,10 +41,6 @@ def clean(ax,grid=False):
  ax.spines[['top','right']].set_visible(False);ax.set_axisbelow(True)
  if grid:ax.grid(axis='y',color=ps.color('grid'),lw=ps.GRID_WIDTH)
 def title(ax,letter,label):ax.set_title(r'$\bf{'+letter+'}$  '+label,loc='left',pad=6)
-def folds_legend(fig,mean=False):
- handles=[Line2D([0],[0],color=c,ls='none' if mean else s,lw=ps.CURVE_WIDTH,marker=m if mean else None,ms=3,label=f'Fold {i+1}') for i,(c,s,m) in enumerate(zip(FOLD_COLORS,FOLD_STYLES,FOLD_MARKERS))]
- if mean:handles=[Patch(facecolor=ps.color('mean'),edgecolor='none',label='Mean')]+handles
- fig.legend(handles=handles,loc='lower center',bbox_to_anchor=(.5,.01),ncol=6 if mean else 5,frameon=False,handlelength=2.0,columnspacing=1.1)
 def save(fig,stem,label,heading,caption,plotted,used,*,png_only=False,**details):
  fig.canvas.draw();w,h=fig.get_size_inches()*25.4
  assert abs(w-ps.WIDTH_MM)<1e-8 and h<=234
@@ -170,15 +167,13 @@ def importance(revision=False):
  source=pd.read_csv(SOURCES['importance']);labels=json.loads(SOURCES['labels'].read_text())
  d=source[source.branch.eq('non_windowed')&source.feature_set.eq('preop_and_all_waveforms')].copy();d['fold_number']=d.fold.str.removeprefix('outer_').astype(int)+1
  custom={'optype_Transplantation':'Transplantation','optype_Colorectal':'Colorectal procedure','optype_Major resection':'Major resection','department_Thoracic surgery':'Thoracic surgery department','department_General surgery':'General surgery department','asa_3.0':'ASA III','asa_1.0':'ASA I','SNUADC_ECG_II_CO_HistogramAMI_even_2_5':'ECG · Auto mutual information (even bins)','Primus_AWP_SC_FluctAnal_2_rsrangefit_50_1_logi_prop_r1':'AWP · Rescaled-range fluctuation','Primus_CO2_SC_FluctAnal_2_dfa_50_1_2_logi_prop_r1':'CO₂ · Detrended fluctuation (50%)','Primus_AWP_SB_BinaryStats_diff_longstretch0':'AWP · Longest stretch of successive differences','SNUADC_PLETH_DN_Mean':'PLETH · Processed mean'}
- fig=canvas(182);axes=fig.subplots(2,1);fig.subplots_adjust(left=.47,right=.975,bottom=.135,top=.945,hspace=.55)
- selected=[]
- for oi,(outcome,olabel) in enumerate(OUTCOMES):
+ selected=[];display=[]
+ for outcome,_ in OUTCOMES:
   g=d[d.outcome.eq(outcome)]
   means=g.groupby('feature',sort=False).native_importance.mean().sort_values(ascending=False,kind='stable').head(10)
-  ax=axes[oi];title(ax,chr(97+oi),olabel);ticks=[]
   for j,(feature,mean) in enumerate(means.items()):
    z=g[g.feature.eq(feature)].sort_values('fold_number');assert len(z)==5 and set(z.fold_number)==set(range(1,6))
-   y=9-j;group=z.group.iloc[0]
+   group=z.group.iloc[0]
    label=custom.get(feature,labels.get(feature,feature)).replace('EtCO₂','CO₂').replace(' — ',' · ')
    if group=='clinical':label='Clinical · '+label
    display_label=label.removeprefix('Clinical · ').replace('AWP · Longest stretch of successive differences', 'AWP · Decreasing-run statistic')
@@ -190,14 +185,9 @@ def importance(revision=False):
                    .replace('CO₂ · ', 'Capnography · ')
                    .replace('AWP · ', 'Airway pressure · ')
                    .replace('PLETH · Processed mean', 'PPG · Filtered signal mean'))
-   ticks.append(display_label)
-   ax.barh(y,mean,height=.55,color=ps.color('mean'),edgecolor='none',zorder=1)
-   for k,r in enumerate(z.itertuples()):ax.plot(r.native_importance,y+(k-2)*.105,color=FOLD_COLORS[k],marker=FOLD_MARKERS[k],ls='none',ms=3.5,zorder=3)
    z=z.assign(mean_native_importance=mean,display_rank=j+1,display_label=display_label if revision else label);selected.append(z)
-  ax.set(yticks=np.arange(9,-1,-1),yticklabels=ticks,ylim=(-.65,9.65),xlabel='Importance (log-odds)')
-  ax.set_xlim(0,.72 if outcome=='any_aki' else .35);ax.xaxis.set_major_locator(MaxNLocator(4));ax.tick_params(axis='y',length=0,pad=5)
-  clean(ax);ax.spines['left'].set_visible(False);ax.grid(axis='x',color=ps.color('grid'),lw=ps.GRID_WIDTH)
- folds_legend(fig,mean=True)
+   display.append(z.assign(display_label=display_label))
+ fig=term_importance_figure(pd.concat(display,ignore_index=True), [('any_aki','AKI',.72),('icu_admission','ICU admission',.35)])
  data=pd.concat(selected,ignore_index=True);assert len(data)==100
  caption='Ten leading terms in whole-case combined explainable boosting machine (EBM) models, ranked by mean importance across five outer folds. Gray bars show means; symbols show folds. Importance is the training-weighted mean absolute raw term score (log-odds). Channel prefixes identify waveform terms. Horizontal scales differ by outcome. AWP, airway pressure; PLETH, plethysmography. Waveform definitions: Table S9.'
  if revision:
@@ -207,25 +197,6 @@ def importance(revision=False):
            'DFA, detrended fluctuation analysis; ECG, electrocardiography; PPG, photoplethysmography.')
  save(fig,'Figure4_EBM_global_importance','Figure 4','EBM term importance',caption,data,['importance','labels'],png_only=revision,terms_per_outcome=10,folds=5,selection='Descending across-fold mean native importance; top ten independently per outcome',group_importance_sums_used=False)
  CHECKS['importance']={'rows':100,'terms_per_outcome':10,'five_folds_per_term':True,'native_importance_only':True,'all_nonnegative':bool(data.native_importance.ge(0).all()),'importance_definition':'training-distribution weighted mean absolute native term contribution'}
-
-
-def response_figure(data, hist, panel_column, panels):
- fig=canvas(118);grid=fig.add_gridspec(1,3,left=.10,right=.985,bottom=.28,top=.91,wspace=.46)
- for i,(panel,heading,xlabel,locator) in enumerate(panels):
-  sub=grid[i].subgridspec(2,1,height_ratios=[3.7,1],hspace=.035)
-  ax=fig.add_subplot(sub[0]);hx=fig.add_subplot(sub[1],sharex=ax)
-  z=data[data[panel_column].eq(panel)];h=hist[hist[panel_column].eq(panel)];ref=z.reference.iloc[0]
-  title(ax,chr(97+i),heading)
-  for fold,g in z.groupby('fold'):
-   k=int(fold);g=g.sort_values('value');ax.step(g.value,g.raw_contribution_minus_reference,where='post',color=FOLD_COLORS[k],ls=FOLD_STYLES[k],lw=ps.CURVE_WIDTH)
-  ax.axhline(0,color=ps.color('reference'),ls='--',lw=ps.REFERENCE_WIDTH);ax.axvline(ref,color=ps.color('reference'),ls=':',lw=ps.REFERENCE_WIDTH)
-  ax.set_ylabel('Δ raw log-odds');ax.tick_params(axis='x',labelbottom=False);clean(ax,True);ax.yaxis.set_major_locator(MaxNLocator(4))
-  hx.bar(h.bin_lower,h['count'],width=h.bin_upper-h.bin_lower,align='edge',color=ps.color('support'),linewidth=0)
-  hx.set(xlim=(h.bin_lower.min(),h.bin_upper.max()),ylabel='Training n',xlabel=xlabel+'\nReference = '+f'{ref:.3g}'.replace('-','−'))
-  hx.yaxis.set_major_locator(MaxNLocator(2,integer=True));clean(hx)
-  hx.xaxis.set_major_locator(locator)
- folds_legend(fig)
- return fig
 
 
 def responses(replacement=None):

@@ -18,7 +18,7 @@ In the outcome-blinded comparison, whole-operation Catch24 on one 4-hour-25-minu
 - [ ] Complete both feature branches and the joint split preflight. Review `data/processed/eeg_attrition.json` and `control/eeg_split_preflight.json`. A split failure in any combination blocks fitting for the entire study.
 - [ ] Complete isolated diagnostic fits and reporting in `diagnostic/`. The diagnostic marker binds to the exact code and validated split gate.
 - [ ] Complete all 414 configurations and rebuild all displays and companion exports. Confirm that each scope's run manifest is validated and the EEG display manifest traces to the saved artifacts.
-- [ ] Review Word and vector PDF books, rerun protected-source checksum checks, and record definitive resource use and paired EEG effects.
+- [ ] Review Word and PDF books, rerun protected-source checksum checks, and record definitive resource use and paired EEG effects.
 
 ## Commands
 
@@ -42,7 +42,7 @@ After the pilot and candidate commit, use `bash experimental/eeg/run_study.sh` i
 
 Extraction defaults to one worker per available CPU, bounded by affinity, CPU quota, and remaining operations. `AKI_EXTRACTION_WORKERS` can lower that count. `AKI_EEG_DOWNLOAD_WORKERS` independently limits concurrent VitalDB downloads and defaults to four.
 
-`results/catch22/eeg_report/` contains the EEG Word and PDF books, source tables, figure assets, paired comparisons, curve data, and numerical explanation exports. PDF and Word composition use the same figures, tables, and ordering. PDF proofs of the Word files require a DOCX renderer for pagination review.
+`results/catch22/eeg_report/` contains the manuscript-layout EEG Word and PDF books, vector figure assets, source tables, paired comparisons, curve data, and numerical explanation exports. The PDF books and standalone table proofs are exported from Word with LibreOffice Writer. Set `AKI_EEG_SOFFICE` to the Writer executable if `soffice` is outside `PATH`. The figure assets remain available as standalone vector PDFs.
 
 Companion fold explanations export in separate processes. The default uses the available CPU allocation and budgets 1 GiB of available RAM per process. Each parallel worker uses one native compute thread. Set `AKI_REPORT_CPU_BUDGET` to lower the limit. To rebuild displays directly from validated saved fits and comparison tables, run the following command with the study paths set above. Use `--fold-workers 1` for a serial export.
 
