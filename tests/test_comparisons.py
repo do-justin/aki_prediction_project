@@ -115,6 +115,27 @@ def test_row_order_workers_and_backends_produce_identical_statistics(tmp_path):
             pd.testing.assert_frame_equal(original[key], changed[key])
 
 
+def test_indexed_draws_keep_model_aliases_and_original_draw_order(tmp_path):
+    sets = prediction_sets(tmp_path, family_count=1)
+    summary, bootstrap, original = calculate(sets, budget=8)
+    # The same model name can appear in display or canonical form.
+    bootstrap.loc[bootstrap.bootstrap_id.mod(2).eq(1), "model_name"] = "logistic_regression"
+    bootstrap = bootstrap.iloc[::-1]
+
+    changed = comparisons.build_comparison_artifacts(sets, summary, bootstrap, n_bootstrap=8, bootstrap_seed=17)
+
+    for key in comparisons.ARTIFACTS:
+        pd.testing.assert_frame_equal(original[key], changed[key])
+
+
+def test_comparisons_reject_duplicate_indexed_draw_ids(tmp_path):
+    sets = prediction_sets(tmp_path, family_count=1)
+    summary, bootstrap, _ = calculate(sets, budget=8)
+    bootstrap.loc[0, "bootstrap_id"] = bootstrap.loc[1, "bootstrap_id"]
+    with pytest.raises(metrics.ValidationError, match="missing or duplicated draw IDs"):
+        comparisons.build_comparison_artifacts(sets, summary, bootstrap, n_bootstrap=8, bootstrap_seed=17)
+
+
 def test_comparisons_reject_altered_bootstrap_and_summary_provenance(tmp_path):
     sets = prediction_sets(tmp_path, family_count=1)
     summary, bootstrap, _ = calculate(sets)
@@ -138,6 +159,35 @@ def test_saved_comparisons_reject_changes_before_report_exports(tmp_path, artifa
     path = tmp_path / artifact
     path.write_bytes(path.read_bytes() + b"\n")
     with pytest.raises(metrics.ValidationError, match="altered|Stale"):
+        comparisons.load_comparison_artifacts(tmp_path, sets, summary)
+
+
+def test_saved_comparisons_accept_only_the_verified_pre_indexing_calculation(tmp_path, monkeypatch):
+    sets = prediction_sets(tmp_path, family_count=1)
+    summary, _, result = calculate(sets, budget=0)
+    summary.to_csv(tmp_path / "metrics_summary.csv", index=False)
+    comparisons.write_comparison_artifacts(result, tmp_path)
+    path = tmp_path / "comparison_inventory.json"
+    inventory = json.loads(path.read_text())
+    current = comparisons.calculation_fingerprint()
+    known = {
+        "results_recreation/comparisons.py": "21e29360d914d97ec2bdfe70aecc04d00b52fa4965817a724d53a31fa86c9356",
+        "results_recreation/metrics_summary.py": "049f674e2b8113f229d3172f88884840da7001474d8d181c465b3fb82d5a5f8f",
+    }
+    inventory["calculation_fingerprint"]["code"].update(known)
+    path.write_text(json.dumps(inventory))
+    comparisons.load_comparison_artifacts(tmp_path, sets, summary)
+
+    inventory["calculation_fingerprint"]["code"]["results_recreation/metrics_summary.py"] = "unknown"
+    path.write_text(json.dumps(inventory))
+    with pytest.raises(metrics.ValidationError, match="Stale comparison calculation protocol"):
+        comparisons.load_comparison_artifacts(tmp_path, sets, summary)
+    inventory["calculation_fingerprint"]["code"].update(known)
+    path.write_text(json.dumps(inventory))
+
+    code = {**current["code"], "results_recreation/metrics_summary.py": "changed"}
+    monkeypatch.setattr(comparisons, "calculation_fingerprint", lambda: {**current, "code": code})
+    with pytest.raises(metrics.ValidationError, match="Stale comparison calculation protocol"):
         comparisons.load_comparison_artifacts(tmp_path, sets, summary)
 
 

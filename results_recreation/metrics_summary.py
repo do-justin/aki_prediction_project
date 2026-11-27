@@ -743,6 +743,10 @@ def bootstrap_draw_hash(indices_list) -> str:
     return digest.hexdigest()
 
 
+def _bootstrap_identity_key(row, fields):
+    return tuple(None if pd.isna(row[field]) else row[field] for field in fields)
+
+
 def summarize(
     prediction_sets: Iterable[PredictionSet], n_bootstrap: int = 5000,
     stratified_bootstrap: bool = False, bootstrap_seed: int = 0, n_jobs: int = -1,
@@ -821,10 +825,18 @@ def summarize(
                                           timeout=bootstrap_timeout, max_retries=max(1, bootstrap_max_retries))
         for (idx, _), frame in zip(members, group_frames):
             frames[idx] = frame
+    # Each worker already returns one full set of draws, so index the
+    # concatenated rows from the worker batches instead of rescanning them.
+    identity_cols = list(identities[0])
+    grouped_rows = defaultdict(list)
+    offset = 0
     for frame, identity in zip(frames, identities):
         if not frame.empty:
             for col, value in identity.items():
                 frame[col] = value
+            end = offset + len(frame)
+            grouped_rows[_bootstrap_identity_key(identity, identity_cols)].append(np.arange(offset, end))
+            offset = end
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
         logger.warning("No bootstrap replicates were produced; confidence intervals cannot be estimated.")
@@ -835,12 +847,9 @@ def summarize(
         return summary_df, None
     bootstrap_df = pd.concat(frames, ignore_index=True)
     metric_cols = [c for c in rows[0] if c not in identities[0]]
-    identity_cols = list(identities[0])
     for idx, row in summary_df.iterrows():
-        mask = pd.Series(True, index=bootstrap_df.index)
-        for col in identity_cols:
-            mask &= bootstrap_df[col].isna() if pd.isna(row[col]) else bootstrap_df[col].eq(row[col])
-        samples = bootstrap_df.loc[mask]
+        positions = grouped_rows.get(_bootstrap_identity_key(row, identity_cols))
+        samples = bootstrap_df.iloc[np.concatenate(positions) if positions else []]
         for metric in metric_cols:
             lower, upper, count = _bootstrap_interval(
                 samples[metric], n_bootstrap,
@@ -860,22 +869,21 @@ def _attach_delta_cis(summary_df, bootstrap_df, metric_cols, *,
                       reference_feature_set, reference_model_name, paired_groups=None):
     """Paired target-minus-reference differences within one aligned population."""
     context = ["cohort_scope", "validation_scheme", "outcome", "branch", "pipeline", "evaluation_case_hash"]
+    key_cols = [*context, "feature_set", "model_name"]
+    summary_groups = summary_df.groupby(key_cols, sort=False, observed=True).indices
+    bootstrap_groups = bootstrap_df.groupby(key_cols, sort=False, observed=True).indices
     for idx, target in summary_df.iterrows():
-        mask = pd.Series(True, index=summary_df.index)
-        boot_mask = pd.Series(True, index=bootstrap_df.index)
-        for col in context:
-            mask &= summary_df[col].eq(target[col])
-            boot_mask &= bootstrap_df[col].eq(target[col])
+        population = tuple(target[col] for col in context)
         reference_name = reference_model_name or target["model_name"]
-        ref_rows = summary_df.loc[mask & summary_df["feature_set"].eq(reference_feature_set)
-                                  & summary_df["model_name"].eq(reference_name)]
-        if len(ref_rows) != 1:
+        reference_key = (*population, reference_feature_set, reference_name)
+        reference_positions = summary_groups.get(reference_key, [])
+        if len(reference_positions) != 1:
             logger.warning("No aligned %s/%s reference for %s", reference_name, reference_feature_set, target["feature_set"])
             continue
-        reference = ref_rows.iloc[0]
-        pool = bootstrap_df.loc[boot_mask]
-        target_boot = pool.loc[pool["feature_set"].eq(target["feature_set"]) & pool["model_name"].eq(target["model_name"])].set_index("bootstrap_id")
-        ref_boot = pool.loc[pool["feature_set"].eq(reference_feature_set) & pool["model_name"].eq(reference_name)].set_index("bootstrap_id")
+        reference = summary_df.iloc[reference_positions[0]]
+        target_key = (*population, target["feature_set"], target["model_name"])
+        target_boot = bootstrap_df.iloc[bootstrap_groups.get(target_key, [])].set_index("bootstrap_id")
+        ref_boot = bootstrap_df.iloc[bootstrap_groups.get(reference_key, [])].set_index("bootstrap_id")
         for metric in metric_cols:
             lower, upper, count = _bootstrap_interval(
                 target_boot[metric] - ref_boot[metric], int(target["bootstrap_replicates"]),

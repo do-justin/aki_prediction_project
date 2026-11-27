@@ -176,6 +176,20 @@ def test_summarize_tolerates_empty_bootstrap_frames(monkeypatch):
     assert bootstrap_df is None
 
 
+def test_indexed_intervals_include_missing_identity_values_and_duplicate_frames(tmp_path):
+    ps = PredictionSet(
+        tmp_path / "test.csv", _prediction_df().drop(columns="subjectid"), .5,
+        "any_aki", "windowed", "preop_only", "xgboost", None,
+    )
+    summary, bootstrap = summarize([ps, ps], n_bootstrap=12, n_jobs=1)
+
+    assert summary.n_patients.isna().all()
+    assert bootstrap.bootstrap_id.tolist() == list(range(12)) * 2
+    expected = np.percentile(bootstrap.brier, [2.5, 97.5])
+    np.testing.assert_array_equal(summary[["brier_lower", "brier_upper"]].to_numpy(), [expected, expected])
+    assert summary.brier_bootstrap_valid.tolist() == [24, 24]
+
+
 def test_native_process_deadline_aborts_workers_without_thread_fallback(tmp_path):
     # Warm the reusable worker pool so this tests cancellation of running tasks,
     # rather than a deadline expiring while Python workers are still importing.

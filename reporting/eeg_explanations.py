@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from functools import lru_cache
 from pathlib import Path
 
@@ -20,6 +21,12 @@ from reporting.manuscript_workspace.revision_data import OUTCOMES
 
 CHANNELS = {"SNUADC_PLETH_": "PPG", "SNUADC_ECG_II_": "ECG", "Primus_CO2_": "CO₂",
             "Primus_AWP_": "Airway pressure", "BIS_EEG1_WAV_": "EEG"}
+NUMERIC_FOLD_FILES = {
+    "logistic_regression": ("coefficients.csv", "explanation_metadata.json"),
+    "xgboost": ("heldout_shap_values.csv.gz", "shap_importance.csv", "explanation_metadata.json"),
+    "ebm": ("term_importance.csv", "heldout_term_contributions.csv.gz", "native_explanation.json",
+            "special_bin_scores.csv", "explanation_metadata.json"),
+}
 
 
 def _fold_dir(predictions, repeat, fold):
@@ -64,10 +71,43 @@ def _fold_export_matrix(matrix: Path, expected_hash: str) -> pd.DataFrame:
     return raw
 
 
-def _export_fold_source(fold: Path, matrix: Path, expected_hash: str, destination: Path) -> None:
+def _restore_fold_export(fold, expected_hash, destination, cached):
+    source, hashes = cached
+    try:
+        metadata = json.loads((fold / "metadata.json").read_text())
+        saved = json.loads((source / "explanation_metadata.json").read_text())
+        if (saved["source_fold"] != str(fold)
+                or metadata["validation_fingerprint"]["dataset_hash"] != expected_hash
+                or any(key not in saved or saved[key] != value for key, value in metadata.items())):
+            return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if not is_outer_fold_checkpoint_complete(fold):
+        raise ValueError(f"EEG report fold checkpoint failed verification: {fold}")
+
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        for name, digest in hashes.items():
+            target = destination / name
+            shutil.copyfile(source / name, target)
+            if file_sha256(target) != digest:
+                break
+        else:
+            return True
+    except OSError:
+        pass
+    for name in hashes:
+        (destination / name).unlink(missing_ok=True)
+    return False
+
+
+def _export_fold_source(fold, matrix, expected_hash, destination, cached=None) -> bool:
     from reporting.fold_explanations import export_fold_bundle
 
+    if cached is not None and _restore_fold_export(fold, expected_hash, destination, cached):
+        return True
     export_fold_bundle(fold, _fold_export_matrix(matrix, expected_hash), destination, numeric_only=True)
+    return False
 
 
 def _inputs(preprocessor):

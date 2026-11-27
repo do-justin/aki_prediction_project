@@ -83,6 +83,7 @@ def export_fold_bundle(
             model = pickle.load(handle)
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = []
+    compression = {"method": "gzip", "compresslevel": 6} if numeric_only else None
     if family == "logistic_regression":
         names = list(transformed.columns)
         coefficients = pd.DataFrame({"feature": names, "coefficient": model.coef_[0],
@@ -104,7 +105,7 @@ def export_fold_bundle(
         contributions = pd.DataFrame(values, columns=transformed.columns)
         contributions.insert(0, "caseid", predictions["caseid"].to_numpy())
         path = output_dir / ("heldout_shap_values.csv.gz" if numeric_only else "heldout_shap_values.csv")
-        contributions.to_csv(path, index=False)
+        contributions.to_csv(path, index=False, compression=compression)
         paths.append(path)
         importance = pd.DataFrame({"feature": transformed.columns, "mean_absolute_SHAP": np.abs(values).mean(axis=0)})
         importance["display_label"] = importance.feature.map(display_labels)
@@ -126,7 +127,8 @@ def export_fold_bundle(
             paths.extend(_bar(importance, "importance", output_dir / "term_importance", title_prefix + "Outer-fold EBM native term importance"))
         local = pd.DataFrame(model.eval_terms(transformed), columns=model.term_names_)
         local.insert(0, "caseid", predictions["caseid"].to_numpy())
-        local.to_csv(output_dir / ("heldout_term_contributions.csv.gz" if numeric_only else "heldout_term_contributions.csv"), index=False)
+        path = output_dir / ("heldout_term_contributions.csv.gz" if numeric_only else "heldout_term_contributions.csv")
+        local.to_csv(path, index=False, compression=compression)
         payload = {"global": global_data, "terms": [],
                    "interpretation": "Native response curves show observed-value bins. Missing and unknown bins are exported separately in special_bins and special_bin_scores.csv; scores are raw model log-odds contributions, not causal effects."}
         special_bins = []

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +29,7 @@ from data_preparation.cohort_scopes import selected_case_hash
 from reporting import publication_style as style
 from reporting.cohort_flow import CohortStage, _draw_cohort_flow_fallback
 from reporting.display_dictionary import load_display_dictionary
+from reporting.eeg_explanations import NUMERIC_FOLD_FILES
 from reporting.figure_rendering import save_report_figure_bundle
 from reporting.manuscript_assets import write_pdf_sections
 from reporting.manuscript_workspace.revise_publication import add_frame, document, heading, note
@@ -642,7 +646,61 @@ def _books(out, tables):
     return books
 
 
-def _export_fold_sources(study, out, *, workers: int) -> None:
+def _fold_export_fingerprint() -> dict:
+    from model_creation import preprocessing
+    from reporting import display_dictionary, fold_explanations
+    from reporting.eeg_explanations import _read_modeling_matrix
+
+    return {
+        "source_sha256": {module.__name__: file_sha256(Path(module.__file__))
+                          for module in (preprocessing, display_dictionary, fold_explanations)},
+        "matrix_reader_sha256": hashlib.sha256(inspect.getsource(_read_modeling_matrix).encode()).hexdigest(),
+        "display_dictionary_sha256": file_sha256(load_display_dictionary().source),
+        "python": platform.python_version(),
+        "libraries": {name: version(name) for name in (
+            "numpy", "pandas", "scipy", "scikit-learn", "xgboost-cpu", "interpret-core", "shap", "pycatch22",
+        )},
+    }
+
+
+def _published_fold_cache(output, fingerprint):
+    manifest = output / "display_manifest.json"
+    try:
+        previous = json.loads(_within(manifest, output).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(previous, dict) or previous.get("fold_export_fingerprint") != fingerprint:
+        return {}
+    hashes = previous.get("files_sha256")
+    if not isinstance(hashes, dict):
+        return {}
+    caches = {}
+    for scope in SCOPES:
+        prefix = Path("companion", scope, "fold_explanations")
+        cache_hashes = {Path(path).relative_to(prefix): digest for path, digest in hashes.items()
+                        if Path(path).is_relative_to(prefix) and isinstance(digest, str)}
+        if cache_hashes:
+            caches[scope] = (_within(output / prefix, output), cache_hashes)
+    return caches
+
+
+def _cached_fold(relative, family, cache):
+    if cache is None:
+        return None
+    root, files = cache
+    names = NUMERIC_FOLD_FILES[family]
+    if any(relative / name not in files for name in names):
+        return None
+    try:
+        source = _within(root / relative, root)
+        for name in names:
+            _within(source / name, root)
+    except ValueError:
+        return None
+    return source, {name: files[relative / name] for name in names}
+
+
+def _export_fold_sources(study, out, *, workers: int, cache=None) -> int:
     from reporting.eeg_explanations import _export_fold_source
 
     matrices = {}
@@ -662,16 +720,18 @@ def _export_fold_sources(study, out, *, workers: int) -> None:
             _within(fold, study["root"])
             for path in fold.iterdir():
                 _within(path, study["root"])
-            destination = out.joinpath(family, outcome, branch, feature, *fold.parts[-2:])
-            jobs.append((fold, matrix, expected_hash, destination))
+            relative = Path(family, outcome, branch, feature, *fold.parts[-2:])
+            jobs.append((fold, matrix, expected_hash, out / relative, _cached_fold(relative, family, cache)))
 
     workers = min(workers, max(1, len(jobs)))
-    print(f"Exporting {len(jobs):,} fold explanations with {workers} workers", flush=True)
+    print(f"Preparing {len(jobs):,} fold explanations with {workers} workers", flush=True)
     with parallel_config(backend="loky", inner_max_num_threads=1):
-        Parallel(n_jobs=workers, batch_size=1)(delayed(_export_fold_source)(*job) for job in jobs)
+        reused = sum(Parallel(n_jobs=workers, batch_size=1)(delayed(_export_fold_source)(*job) for job in jobs))
+    print(f"Reused {reused:,} verified fold exports and rebuilt {len(jobs) - reused:,}", flush=True)
+    return reused
 
 
-def _write_scope_assets(study, out, scope, *, fold_workers, curves=None, whole_explanations=None):
+def _write_scope_assets(study, out, scope, *, fold_workers, fold_cache=None, curves=None, whole_explanations=None):
     from reporting.eeg_explanations import explanation_sources, heldout_figure, importance_figure, response_figure
 
     out.mkdir(parents=True)
@@ -702,7 +762,7 @@ def _write_scope_assets(study, out, scope, *, fold_workers, curves=None, whole_e
                            ("ebm_heldout", heldout_figure)):
             fig, source = build(sources)
             _save_figure(fig, branch_out, key, source)
-    _export_fold_sources(study, out / "fold_explanations", workers=fold_workers)
+    _export_fold_sources(study, out / "fold_explanations", workers=fold_workers, cache=fold_cache)
     return curves
 
 
@@ -740,6 +800,8 @@ def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | No
     table_2, performance = _performance(shared["metrics"])
     table_s1 = _predictor_tables(shared, extractor_version=protocol["versions"]["pycatch22"])
     output.mkdir(parents=True, exist_ok=True)
+    fold_fingerprint = _fold_export_fingerprint()
+    fold_caches = _published_fold_cache(output, fold_fingerprint)
     with tempfile.TemporaryDirectory(prefix=".building-", dir=output) as work, style.style_context():
         out = Path(work)
         tables = {"Table 1": (table_1,), "Table 2": (table_2,), "Table S1": table_s1, "Table S2": (table_s2,)}
@@ -777,12 +839,13 @@ def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | No
         for scope, study in studies.items():
             companion = out / "companion" / scope
             _write_scope_assets(study, companion, scope, fold_workers=fold_workers,
-                                curves=curves if scope == "main_shared" else None,
+                                fold_cache=fold_caches.get(scope), curves=curves if scope == "main_shared" else None,
                                 whole_explanations=explanations if scope == "main_shared" else None)
             _save_figure(*_figure_args(_ablation_figure(ablations, scope=scope), companion, "ablation_ap"))
         books = _books(out, tables)
         ledger = {"study_profile": "eeg", "books": books, "style_sha256": style.STYLE_SHA256,
                   "eeg_protocol": protocol, "split_preflight_sha256": gate_sha,
+                  "fold_export_fingerprint": fold_fingerprint,
                   "delta_convention": "Candidate minus reference. Lower Brier scores indicate better performance.",
                   "intervals": "Patient-cluster percentile intervals conditional on saved fits. Ablations are nominal and exploratory.",
                   "descriptive_sources": {str(processed / name): file_sha256(processed / name)

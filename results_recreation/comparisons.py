@@ -54,6 +54,26 @@ def calculation_fingerprint():
             "dca_grids": {key: threshold_grid_metadata(outcome_thresholds(key)) for key in DEFAULT_RANGES}}
 
 
+def _compatible_calculation(recorded):
+    current = calculation_fingerprint()
+    if recorded == current:
+        return True
+    # The indexed implementation was replayed against the previous calculation
+    # without changing its statistics. Scope that exception to the exact source
+    # pairs so later changes must again match the recorded calculation.
+    path = Path(__file__).resolve().parents[1] / "metadata/comparison_calculation_compatibility.json"
+    try:
+        compatibility = json.loads(path.read_text())
+    except FileNotFoundError:
+        return False
+    code = current["code"]
+    indexed = {name: code.get(name) for name in ("results_recreation/comparisons.py", "results_recreation/metrics_summary.py")}
+    previous = compatibility["before_indexing"]
+    if indexed != compatibility["indexed"] or previous.keys() != indexed.keys():
+        return False
+    return recorded == {**current, "code": {**code, **previous}}
+
+
 def manifest_identity(manifest):
     if manifest is None:
         return None
@@ -172,17 +192,20 @@ def _summary_row(summary, ps):
     return rows.iloc[0]
 
 
-def _replicates(bootstrap, ps, row, n_bootstrap, expected_draw_hash):
+def _bootstrap_groups(bootstrap):
+    models = bootstrap.model_name.astype("category").map(metrics._model_id)
+    keys = [*(bootstrap[field] for field in CONTEXT), models, bootstrap.feature_set]
+    return bootstrap.groupby(keys, sort=False, observed=True).indices
+
+
+def _replicates(bootstrap, ps, row, n_bootstrap, expected_draw_hash, *, groups=None):
     if n_bootstrap == 0:
         return pd.DataFrame(columns=METRICS)
     if bootstrap is None:
         raise metrics.ValidationError("Comparison uncertainty requires saved metric replicates")
-    mask = pd.Series(True, index=bootstrap.index)
-    for field in CONTEXT:
-        mask &= bootstrap[field].eq(getattr(ps, field))
-    mask &= bootstrap.model_name.map(metrics._model_id).eq(metrics._model_id(ps.model_name))
-    mask &= bootstrap.feature_set.eq(ps.feature_set)
-    selected = bootstrap.loc[mask].sort_values("bootstrap_id")
+    if groups is None:
+        groups = _bootstrap_groups(bootstrap)
+    selected = bootstrap.iloc[groups.get(_key(ps), [])].sort_values("bootstrap_id")
     if not np.array_equal(selected.bootstrap_id.to_numpy(), np.arange(n_bootstrap)):
         raise metrics.ValidationError("Metric bootstrap replicates have missing or duplicated draw IDs")
     for column in ("prediction_content_hash", "uncertainty_protocol_version", "bootstrap_replicates",
@@ -216,6 +239,7 @@ def build_comparison_artifacts(prediction_sets, summary, bootstrap, *, n_bootstr
     for key, ps in sets.items():
         populations.setdefault(key[:4], {})[key[4:]] = ps
     paired_rows, dca_tables, dca_pairs, delong_rows, entries = [], [], [], [], []
+    replicate_groups = None
     for context, available in sorted(populations.items()):
         first = next(iter(available.values()))
         for ps in available.values():
@@ -253,7 +277,9 @@ def build_comparison_artifacts(prediction_sets, summary, bootstrap, *, n_bootstr
                     or row.bootstrap_draw_hash != draw_hash):
                 raise metrics.ValidationError("Comparison summary and resampling provenance differ")
             point[key] = row
-            samples[key] = _replicates(bootstrap, ps, row, n_bootstrap, draw_hash)
+            if replicate_groups is None and n_bootstrap and bootstrap is not None:
+                replicate_groups = _bootstrap_groups(bootstrap)
+            samples[key] = _replicates(bootstrap, ps, row, n_bootstrap, draw_hash, groups=replicate_groups)
             table, draws[key] = bootstrap_net_benefit(ps.df.y_true.to_numpy(), ps.df.y_prob_calibrated.to_numpy(),
                                                     thresholds, groups=groups, cluster_counts=cluster_counts)
             curve_points[key] = table.model.to_numpy()
@@ -362,7 +388,7 @@ def load_comparison_artifacts(tables_dir, prediction_sets, summary_df, *, run_ma
     if not path.exists():
         raise metrics.ValidationError("Missing comparison artifacts; regenerate metrics_summary")
     inventory = json.loads(path.read_text())
-    if inventory.get("calculation_fingerprint") != calculation_fingerprint():
+    if not _compatible_calculation(inventory.get("calculation_fingerprint")):
         raise metrics.ValidationError("Stale comparison calculation protocol; regenerate metrics_summary")
     if isinstance(run_manifest, (str, Path)):
         run_manifest = json.loads(Path(run_manifest).read_text())

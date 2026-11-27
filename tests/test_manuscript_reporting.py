@@ -1,3 +1,4 @@
+import gzip
 import json
 import hashlib
 import pickle
@@ -789,6 +790,11 @@ def test_native_fold_explanations_regenerate_without_fitting(family, tmp_path, m
         assert "raw model log-odds" in metadata["shap_output_scale"]
     assert len(titles) >= 2
     assert all(title.startswith("Diagnostic: ") for title in titles)
+
+    numeric_destination = tmp_path / "numeric_explanations"
+    explanations.export_fold_bundle(fold, raw, numeric_destination, numeric_only=True)
+    archive = numeric_destination / (expected + ".gz")
+    assert gzip.decompress(archive.read_bytes()) == (destination / expected).read_bytes()
 
 
 def test_explanation_bar_uses_display_labels_without_invented_statistic_units(tmp_path, monkeypatch):

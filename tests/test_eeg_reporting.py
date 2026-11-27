@@ -121,6 +121,7 @@ def test_eeg_parallel_fold_exports_match_serial(tmp_path):
 
     from data_preparation.artifact_metadata import file_sha256
     from model_creation.preprocessing import FoldPreprocessor
+    from model_creation.validation import CHECKPOINT_BUNDLE_PROTOCOL_VERSION
 
     raw = pd.DataFrame({"caseid": [1, 2, 3, 4], "age": [40, 60, 50, 70]})
     matrix = tmp_path / "modeling.csv"
@@ -133,12 +134,21 @@ def test_eeg_parallel_fold_exports_match_serial(tmp_path):
     for index in range(5):
         fold = config / "artifacts" / "folds" / "repeat_00" / f"outer_{index:02d}"
         fold.mkdir(parents=True)
-        (fold / "metadata.json").write_text(json.dumps({
-            "model_type": "logistic_regression", "validation_fingerprint": {"dataset_hash": digest},
-        }))
         pd.DataFrame({"caseid": [3, 4], "y_true": [0, 1]}).to_csv(fold / "test_predictions.csv", index=False)
+        pd.DataFrame({"caseid": [1, 2]}).to_csv(fold / "train_oof.csv", index=False)
+        for name in ("calibration.json", "threshold.json", "best_params.json"):
+            (fold / name).write_text("{}")
         (fold / "preprocessor.pkl").write_bytes(pickle.dumps(preprocessor))
         (fold / "model.pkl").write_bytes(pickle.dumps(model))
+        hashes = {p.name: file_sha256(p) for p in fold.iterdir()}
+        (fold / "metadata.json").write_text(json.dumps({
+            "status": "completed", "model_type": "logistic_regression", "model_path": "model.pkl",
+            "checkpoint_bundle_protocol_version": CHECKPOINT_BUNDLE_PROTOCOL_VERSION,
+            "validation_fingerprint": {"dataset_hash": digest,
+                                       "checkpoint_bundle_protocol_version": CHECKPOINT_BUNDLE_PROTOCOL_VERSION},
+            "model_sha256": hashes["model.pkl"], "preprocessor_sha256": hashes["preprocessor.pkl"],
+            "artifact_sha256": hashes,
+        }))
     key = ("logistic_regression", "any_aki", "non_windowed", "preop_only")
     study = {
         "root": tmp_path / "results",
@@ -146,7 +156,9 @@ def test_eeg_parallel_fold_exports_match_serial(tmp_path):
         "manifest": {"branch_rosters": {"non_windowed": {"dataset_sha256": digest}}},
         "predictions": {key: SimpleNamespace(path=config / "predictions" / "test.csv")},
     }
-    serial, parallel = (tmp_path / name for name in ("serial", "parallel"))
+    published = tmp_path / "published"
+    serial = published / "companion" / "main_shared" / "fold_explanations"
+    parallel = tmp_path / "parallel"
     eeg_study._export_fold_sources(study, serial, workers=1)
     eeg_study._export_fold_sources(study, parallel, workers=2)
 
@@ -156,6 +168,24 @@ def test_eeg_parallel_fold_exports_match_serial(tmp_path):
     assert len([p for p in parallel_files if p.name == "coefficients.csv"]) == 5
     output_metadata = parallel.joinpath(*key, "repeat_00", "outer_00", "explanation_metadata.json")
     assert json.loads(output_metadata.read_text())["caseids"] == [3, 4]
+
+    fingerprint = {"exporter": "verified"}
+    assert eeg_study._published_fold_cache(published, fingerprint) == {}
+    (published / "display_manifest.json").write_text(json.dumps({
+        "fold_export_fingerprint": fingerprint,
+        "files_sha256": {str((serial / p).relative_to(published)): file_sha256(serial / p) for p in serial_files},
+    }))
+    assert eeg_study._published_fold_cache(published, {"exporter": "new version"}) == {}
+    cache = eeg_study._published_fold_cache(published, fingerprint)["main_shared"]
+    bad_csv = next(p for p in serial_files if p.name == "coefficients.csv")
+    (serial / bad_csv).write_text("invalid cache")
+    rebuilt = tmp_path / "rebuilt"
+    assert eeg_study._export_fold_sources(study, rebuilt, workers=2, cache=cache) == 4
+    assert serial_files == {p.relative_to(rebuilt): p.read_bytes() for p in rebuilt.rglob("*") if p.is_file()}
+
+    (config / "artifacts/folds/repeat_00/outer_00/model.pkl").write_bytes(b"broken fold")
+    with pytest.raises(ValueError, match="checkpoint failed verification"):
+        eeg_study._export_fold_sources(study, tmp_path / "invalid", workers=1, cache=cache)
 
 
 def test_eeg_fold_workers_respect_report_budget_and_available_resources(monkeypatch):

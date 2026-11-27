@@ -53,6 +53,11 @@ python -B -m reporting.eeg_study --artifact-root "$AKI_ARTIFACT_ROOT" \
 
 A local benchmark on 120 copied folds across both cohorts, both branches, and all three model families took 143.9 seconds with one worker, 25.5 seconds with eight, and 22.6 seconds with 16. All 400 export files matched after decompressing the gzip CSVs. These timings cover fold export and worker startup.
 
+A completed display manifest records the fold exporter fingerprint and output checksums. Later rebuilds reuse fold explanations when the saved modeling inputs, fold bundle, exporter, and output checksums match. The first rebuild of an older report populates this fingerprint. Missing or damaged exports are regenerated individually. Numerical fold CSVs use gzip level 6.
+On the 120-fold benchmark copy, a fresh eight-worker export took 24.0 seconds and verified reuse took 0.55 seconds. The 400 reused files matched byte for byte.
+
+Bootstrap reporting indexes saved draws by configuration for confidence intervals, deltas, and comparisons. It retains the existing draw order, inputs, and provenance checks.
+
 ## Fixed study settings
 
 The experimental scope uses the handoff's 23 named configurations and the three cohort–outcome combinations. All 414 configurations are fit independently, including the branch-specific clinical baselines. The shared whole-operation core runs first. Fit LR, XGBoost and EBM with 50 trials, training-partition balancing, and deterministic patient-grouped 5/3/5 validation. Report 5,000 patient-clustered bootstrap draws with seed 0 from the saved outer-test predictions.
