@@ -266,7 +266,7 @@ def heldout_figure(sources):
     for i, outcome in enumerate(outcomes):
         for j, quantile in enumerate((.1, .9)):
             ax = axes[i, j]
-            rows = selected[selected.outcome.eq(outcome) & selected.quantile.eq(quantile)]
+            rows = selected[selected.outcome.eq(outcome) & selected["quantile"].eq(quantile)]
             for y, row in enumerate(rows.itertuples(index=False)):
                 ink = style.color("orange" if row.contribution < 0 else "blue")
                 ax.barh(y, row.contribution, left=row.start, color=ink, height=.65)

@@ -11,7 +11,7 @@ from scipy.special import expit, logit
 from model_creation.utils import EEG_FEATURE_SETS
 from reporting import eeg_study
 from reporting.display_dictionary import load_display_dictionary
-from reporting.eeg_explanations import _case_explanation, _chosen_cases
+from reporting.eeg_explanations import _case_explanation, _chosen_cases, heldout_figure
 from reporting.feature_set_display import FeatureSetDisplay
 from results_recreation.comparisons import EEG_INCREMENT_PAIRS, FAMILIES, _eeg_inventory
 from results_recreation.metrics_summary import PredictionSet
@@ -69,6 +69,27 @@ def test_eeg_case_percentiles_keep_ties_and_replay_probability_clipping(tmp_path
     assert common["calibrated_probability"] == pytest.approx(risk)
     assert plotted["Probability clipping correction"] < 0
     assert expit(common["calibrated_intercept"] + sum(plotted.values())) == pytest.approx(risk)
+
+
+def test_eeg_heldout_figure_uses_both_risk_percentiles():
+    import matplotlib.pyplot as plt
+
+    contributions = pd.DataFrame({
+        "outcome": ["any_aki", "any_aki"],
+        "quantile": [.1, .9],
+        "group": ["EEG", "EEG"],
+        "start": [0.0, 0.0],
+        "contribution": [-.2, .4],
+        "calibrated_probability": [.05, .4],
+    })
+    figure, source = heldout_figure({"case_contributions": contributions})
+    try:
+        pd.testing.assert_frame_equal(source, contributions)
+        assert [axis.patches[0].get_width() for axis in figure.axes] == [-.2, .4]
+        assert "10% risk percentile" in figure.axes[0].get_title()
+        assert "90% risk percentile" in figure.axes[1].get_title()
+    finally:
+        plt.close(figure)
 
 
 def test_eeg_labels_have_units_only_for_dimensional_statistics(monkeypatch):
