@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import joblib
@@ -47,13 +48,26 @@ def _fold_inputs(study, raw, predictions, repeat, fold):
     return preprocessor, model, training, test, provenance
 
 
-def _raw(study, branch):
-    path = study["matrix_paths"][branch]
+def _read_modeling_matrix(path: Path) -> pd.DataFrame:
     raw = pd.read_csv(path)
     if raw.caseid.duplicated().any():
         raise ValueError(f"Duplicate EEG modeling operations: {path}")
     raw.attrs["source_dataset_sha256"] = file_sha256(path)
     return raw
+
+
+@lru_cache(maxsize=2)
+def _fold_export_matrix(matrix: Path, expected_hash: str) -> pd.DataFrame:
+    raw = _read_modeling_matrix(matrix)
+    if raw.attrs["source_dataset_sha256"] != expected_hash:
+        raise ValueError(f"EEG fold export modeling dataset hash mismatch: {matrix}")
+    return raw
+
+
+def _export_fold_source(fold: Path, matrix: Path, expected_hash: str, destination: Path) -> None:
+    from reporting.fold_explanations import export_fold_bundle
+
+    export_fold_bundle(fold, _fold_export_matrix(matrix, expected_hash), destination, numeric_only=True)
 
 
 def _inputs(preprocessor):
@@ -151,7 +165,7 @@ def _case_explanation(bundle, case_id, lookup):
 
 
 def explanation_sources(study, branch):
-    raw = _raw(study, branch)
+    raw = _read_modeling_matrix(study["matrix_paths"][branch])
     lookup = raw.set_index("caseid")
     outcomes = [outcome for outcome in OUTCOMES if ("ebm", outcome, branch, "preop_and_all_five") in study["predictions"]]
     importance, responses, supports, ledger, terms, contributions = [], [], [], [], [], []

@@ -1,4 +1,5 @@
 import json
+import pickle
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
@@ -113,6 +114,64 @@ def test_eeg_report_rejects_paths_outside_study(tmp_path):
     path.symlink_to(outside)
     with pytest.raises(ValueError, match="outside its study"):
         eeg_study._within(path, root)
+
+
+def test_eeg_parallel_fold_exports_match_serial(tmp_path):
+    from sklearn.linear_model import LogisticRegression
+
+    from data_preparation.artifact_metadata import file_sha256
+    from model_creation.preprocessing import FoldPreprocessor
+
+    raw = pd.DataFrame({"caseid": [1, 2, 3, 4], "age": [40, 60, 50, 70]})
+    matrix = tmp_path / "modeling.csv"
+    raw.to_csv(matrix, index=False)
+    digest = file_sha256(matrix)
+    preprocessor = FoldPreprocessor()
+    training = preprocessor.fit_transform(raw.loc[:1, ["age"]])
+    model = LogisticRegression().fit(training, [0, 1])
+    config = tmp_path / "results" / "models" / "preop_only"
+    for index in range(5):
+        fold = config / "artifacts" / "folds" / "repeat_00" / f"outer_{index:02d}"
+        fold.mkdir(parents=True)
+        (fold / "metadata.json").write_text(json.dumps({
+            "model_type": "logistic_regression", "validation_fingerprint": {"dataset_hash": digest},
+        }))
+        pd.DataFrame({"caseid": [3, 4], "y_true": [0, 1]}).to_csv(fold / "test_predictions.csv", index=False)
+        (fold / "preprocessor.pkl").write_bytes(pickle.dumps(preprocessor))
+        (fold / "model.pkl").write_bytes(pickle.dumps(model))
+    key = ("logistic_regression", "any_aki", "non_windowed", "preop_only")
+    study = {
+        "root": tmp_path / "results",
+        "matrix_paths": {"non_windowed": matrix},
+        "manifest": {"branch_rosters": {"non_windowed": {"dataset_sha256": digest}}},
+        "predictions": {key: SimpleNamespace(path=config / "predictions" / "test.csv")},
+    }
+    serial, parallel = (tmp_path / name for name in ("serial", "parallel"))
+    eeg_study._export_fold_sources(study, serial, workers=1)
+    eeg_study._export_fold_sources(study, parallel, workers=2)
+
+    serial_files = {p.relative_to(serial): p.read_bytes() for p in serial.rglob("*") if p.is_file()}
+    parallel_files = {p.relative_to(parallel): p.read_bytes() for p in parallel.rglob("*") if p.is_file()}
+    assert serial_files == parallel_files
+    assert len([p for p in parallel_files if p.name == "coefficients.csv"]) == 5
+    output_metadata = parallel.joinpath(*key, "repeat_00", "outer_00", "explanation_metadata.json")
+    assert json.loads(output_metadata.read_text())["caseids"] == [3, 4]
+
+
+def test_eeg_fold_workers_respect_report_budget_and_available_resources(monkeypatch):
+    resources = {"available_cpus": 64, "memory_available_bytes": 128 * 1024 ** 3}
+    monkeypatch.setattr(eeg_study, "resource_snapshot", lambda: resources)
+    monkeypatch.delenv("AKI_REPORT_CPU_BUDGET", raising=False)
+    assert eeg_study._fold_worker_count(None) == 64
+    assert eeg_study._fold_worker_count(8) == 8
+    assert eeg_study._fold_worker_count(128) == 64
+    with pytest.raises(ValueError, match="must be positive"):
+        eeg_study._fold_worker_count(0)
+    monkeypatch.setenv("AKI_REPORT_CPU_BUDGET", "12")
+    assert eeg_study._fold_worker_count(None) == 12
+    assert eeg_study._fold_worker_count(32) == 12
+    resources["memory_available_bytes"] = 3 * 1024 ** 3
+    assert eeg_study._fold_worker_count(32) == 3
 
 
 def test_eeg_descriptor_table_uses_frozen_extractor_definitions():

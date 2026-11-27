@@ -44,6 +44,15 @@ Extraction defaults to one worker per available CPU, bounded by affinity, CPU qu
 
 `results/catch22/eeg_report/` contains the EEG Word and PDF books, source tables, figure assets, paired comparisons, curve data, and numerical explanation exports. PDF and Word composition use the same figures, tables, and ordering. PDF proofs of the Word files require a DOCX renderer for pagination review.
 
+Companion fold explanations export in separate processes. The default uses the available CPU allocation and budgets 1 GiB of available RAM per process. Each parallel worker uses one native compute thread. Set `AKI_REPORT_CPU_BUDGET` to lower the limit. To rebuild displays directly from validated saved fits and comparison tables, run the following command with the study paths set above. Use `--fold-workers 1` for a serial export.
+
+```bash
+python -B -m reporting.eeg_study --artifact-root "$AKI_ARTIFACT_ROOT" \
+  --processed-dir "$AKI_ARTIFACT_ROOT/data/processed" --fold-workers 8
+```
+
+A local benchmark on 120 copied folds across both cohorts, both branches, and all three model families took 143.9 seconds with one worker, 25.5 seconds with eight, and 22.6 seconds with 16. All 400 export files matched after decompressing the gzip CSVs. These timings cover fold export and worker startup.
+
 ## Fixed study settings
 
 The experimental scope uses the handoff's 23 named configurations and the three cohort–outcome combinations. All 414 configurations are fit independently, including the branch-specific clinical baselines. The shared whole-operation core runs first. Fit LR, XGBoost and EBM with 50 trials, training-partition balancing, and deterministic patient-grouped 5/3/5 validation. Report 5,000 patient-clustered bootstrap draws with seed 0 from the saved outer-test predictions.

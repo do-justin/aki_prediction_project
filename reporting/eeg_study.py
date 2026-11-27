@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ import numpy as np
 import pandas as pd
 from docx import Document
 from docx.shared import Inches
+from joblib import Parallel, delayed, parallel_config
 from PIL import Image
 from sklearn.metrics import precision_recall_curve, roc_curve
 
@@ -38,6 +40,7 @@ from results_recreation.metrics_summary import (
     _model_id, _prediction_content_hash, compute_point_metrics, crawl_predictions,
 )
 from results_recreation.results_analysis import PlotConfig, _calibration_bins
+from runtime_resources import resource_snapshot
 
 SCOPES = {"main_shared": ("Shared AKI/ICU", "eeg_main_shared_v1"),
           "icu_waveform_sensitivity": ("Broader ICU", "eeg_icu_waveform_sensitivity_v1")}
@@ -639,27 +642,36 @@ def _books(out, tables):
     return books
 
 
-def _export_fold_sources(study, out):
-    from reporting.eeg_explanations import _raw
-    from reporting.fold_explanations import export_fold_bundle
+def _export_fold_sources(study, out, *, workers: int) -> None:
+    from reporting.eeg_explanations import _export_fold_source
 
-    for branch in BRANCHES:
-        raw = _raw(study, branch)
-        for (family, outcome, selected_branch, feature), ps in study["predictions"].items():
-            if branch != selected_branch:
-                continue
-            fold_dirs = sorted((ps.path.parent.parent / "artifacts/folds").glob("repeat_*/outer_*"))
-            if len(fold_dirs) != 5:
-                raise ValueError(f"Incomplete verified EEG fold explanations: {ps.path}")
-            for fold_dir in fold_dirs:
-                _within(fold_dir, study["root"])
-                for path in fold_dir.iterdir():
-                    _within(path, study["root"])
-                export_fold_bundle(fold_dir, raw, out.joinpath(family, outcome, branch, feature, *fold_dir.parts[-2:]),
-                                   numeric_only=True)
+    matrices = {}
+    for branch, matrix in study["matrix_paths"].items():
+        expected_hash = study["manifest"]["branch_rosters"][branch]["dataset_sha256"]
+        if file_sha256(matrix) != expected_hash:
+            raise ValueError(f"EEG fold export modeling dataset hash mismatch: {matrix}")
+        matrices[branch] = (matrix, expected_hash)
+
+    jobs = []
+    for (family, outcome, branch, feature), ps in study["predictions"].items():
+        matrix, expected_hash = matrices[branch]
+        fold_dirs = sorted((ps.path.parent.parent / "artifacts/folds").glob("repeat_*/outer_*"))
+        if len(fold_dirs) != 5:
+            raise ValueError(f"Incomplete verified EEG fold explanations: {ps.path}")
+        for fold in fold_dirs:
+            _within(fold, study["root"])
+            for path in fold.iterdir():
+                _within(path, study["root"])
+            destination = out.joinpath(family, outcome, branch, feature, *fold.parts[-2:])
+            jobs.append((fold, matrix, expected_hash, destination))
+
+    workers = min(workers, max(1, len(jobs)))
+    print(f"Exporting {len(jobs):,} fold explanations with {workers} workers", flush=True)
+    with parallel_config(backend="loky", inner_max_num_threads=1):
+        Parallel(n_jobs=workers, batch_size=1)(delayed(_export_fold_source)(*job) for job in jobs)
 
 
-def _write_scope_assets(study, out, scope, *, curves=None, whole_explanations=None):
+def _write_scope_assets(study, out, scope, *, fold_workers, curves=None, whole_explanations=None):
     from reporting.eeg_explanations import explanation_sources, heldout_figure, importance_figure, response_figure
 
     out.mkdir(parents=True)
@@ -690,13 +702,26 @@ def _write_scope_assets(study, out, scope, *, curves=None, whole_explanations=No
                            ("ebm_heldout", heldout_figure)):
             fig, source = build(sources)
             _save_figure(fig, branch_out, key, source)
-    _export_fold_sources(study, out / "fold_explanations")
+    _export_fold_sources(study, out / "fold_explanations", workers=fold_workers)
     return curves
 
 
-def build_report(artifact_root: Path, processed: Path) -> Path:
+def _fold_worker_count(requested: int | None) -> int:
+    resources = resource_snapshot()
+    available = resources["available_cpus"]
+    budget = int(os.getenv("AKI_REPORT_CPU_BUDGET", str(available)))
+    if budget < 1 or (requested is not None and requested < 1):
+        raise ValueError("The report CPU budget and fold worker count must be positive")
+    memory = resources["memory_available_bytes"]
+    # Account for each process loading the numerical libraries and both input matrices.
+    memory_workers = max(1, memory // (1024 ** 3)) if memory is not None else available
+    return min(available, budget, memory_workers, requested if requested is not None else available)
+
+
+def build_report(artifact_root: Path, processed: Path, *, fold_workers: int | None = None) -> Path:
     from reporting.eeg_explanations import explanation_sources, heldout_figure, importance_figure, response_figure
 
+    fold_workers = _fold_worker_count(fold_workers)
     artifact_root = artifact_root.resolve()
     processed = _within(processed, artifact_root)
     output = _within(artifact_root / "results/catch22/eeg_report", artifact_root)
@@ -751,7 +776,8 @@ def build_report(artifact_root: Path, processed: Path) -> Path:
         ablations.to_csv(out / "ablation_comparisons.csv", index=False)
         for scope, study in studies.items():
             companion = out / "companion" / scope
-            _write_scope_assets(study, companion, scope, curves=curves if scope == "main_shared" else None,
+            _write_scope_assets(study, companion, scope, fold_workers=fold_workers,
+                                curves=curves if scope == "main_shared" else None,
                                 whole_explanations=explanations if scope == "main_shared" else None)
             _save_figure(*_figure_args(_ablation_figure(ablations, scope=scope), companion, "ablation_ap"))
         books = _books(out, tables)
@@ -795,8 +821,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, default=get_artifact_root())
     parser.add_argument("--processed-dir", type=Path, default=get_processed_dir(project))
+    parser.add_argument("--fold-workers", type=int,
+                        help="Maximum fold export processes (default: available report CPU budget)")
     args = parser.parse_args()
-    print(build_report(args.artifact_root, args.processed_dir))
+    print(build_report(args.artifact_root, args.processed_dir, fold_workers=args.fold_workers))
 
 
 if __name__ == "__main__":
